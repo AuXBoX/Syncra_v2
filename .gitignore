@@ -92,6 +92,9 @@ config/
 local/
 secrets/
 
+# Kiro AI assistant configuration
+.kiro/
+
 # PyQt UI files
 *.ui
 
