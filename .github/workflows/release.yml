@@ -1,0 +1,176 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v2.1.0)'
+        required: true
+        default: 'v2.1.0'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+            ext: .exe
+            artifact_name: Syncra-Windows.exe
+          - os: ubuntu-latest
+            name: Linux
+            ext: ""
+            artifact_name: Syncra-Linux
+          - os: macos-latest
+            name: macOS
+            ext: ""
+            artifact_name: Syncra-macOS
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-pyqt5 python3-pyqt5.qtsvg xvfb
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build executable (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        pyinstaller --onefile --windowed --name="Syncra-Windows" --icon="Syncra Icon.ico" --hidden-import=pyotp --hidden-import=spotipy --hidden-import=deezer --hidden-import=fuzzywuzzy --hidden-import=plexapi --hidden-import=PyQt5.QtSvg main.py
+
+    - name: Build executable (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        xvfb-run -a pyinstaller --onefile --windowed --name="Syncra-Linux" --hidden-import=pyotp --hidden-import=spotipy --hidden-import=deezer --hidden-import=fuzzywuzzy --hidden-import=plexapi --hidden-import=PyQt5.QtSvg main.py
+
+    - name: Build executable (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        pyinstaller --onefile --windowed --name="Syncra-macOS" --hidden-import=pyotp --hidden-import=spotipy --hidden-import=deezer --hidden-import=fuzzywuzzy --hidden-import=plexapi --hidden-import=PyQt5.QtSvg main.py
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: dist/${{ matrix.artifact_name }}
+        retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R ./artifacts
+
+    - name: Create ZIP archives
+      run: |
+        cd artifacts
+        zip -r ../Syncra-Windows.zip Syncra-Windows.exe/
+        zip -r ../Syncra-Linux.zip Syncra-Linux/
+        zip -r ../Syncra-macOS.zip Syncra-macOS/
+        cd ..
+        ls -la *.zip
+
+    - name: Get version
+      id: get_version
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.get_version.outputs.VERSION }}
+        release_name: Syncra ${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## 🎉 Syncra ${{ steps.get_version.outputs.VERSION }}
+          
+          ### 📦 Downloads
+          - **🪟 Windows**: Download `Syncra-Windows.zip`
+          - **🐧 Linux**: Download `Syncra-Linux.zip`  
+          - **🍎 macOS**: Download `Syncra-macOS.zip`
+          
+          ### 🚀 Installation
+          1. Download the appropriate file for your platform
+          2. Extract the archive
+          3. Run the executable (no installation required!)
+          
+          ### ✨ Recent Improvements
+          - Enhanced track matching with manual search fallback
+          - Improved featured artist handling and version preferences
+          - Better performance and reliability
+          - Comprehensive bug fixes
+          
+          ### 📋 System Requirements
+          - **Windows**: Windows 10/11 (64-bit)
+          - **macOS**: macOS 10.14+ (Mojave or later)
+          - **Linux**: Ubuntu 18.04+ or equivalent
+          
+          **Full changelog**: https://github.com/AuXBoX/Syncrav2/compare/v2.0.0...${{ steps.get_version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Windows Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./Syncra-Windows.zip
+        asset_name: Syncra-Windows.zip
+        asset_content_type: application/zip
+
+    - name: Upload Linux Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./Syncra-Linux.zip
+        asset_name: Syncra-Linux.zip
+        asset_content_type: application/zip
+
+    - name: Upload macOS Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./Syncra-macOS.zip
+        asset_name: Syncra-macOS.zip
+        asset_content_type: application/zip
