@@ -2696,8 +2696,8 @@ class ManualSearchDialog(QDialog):
                 except Exception as e:
                     logging.warning(f"Title search failed: {e}")
                 
-                # 2. Smart search - remove featured artists to reduce noise
-                clean_search_text = self.remove_featured_artists(search_text)
+                # 2. Smart search - remove featured artists and version info to reduce noise
+                clean_search_text = self.clean_title_for_search(search_text)
                 logging.debug(f"Cleaned search text: '{search_text}' -> '{clean_search_text}'")
                 
                 # Search with cleaned text (this is the most important search)
@@ -4523,9 +4523,9 @@ class PlaylistConverterThread(QThread):
             except Exception as e:
                 logging.warning(f"Original title search failed: {e}")
             
-            # Also try the clean title (without featured artists)
+            # Also try the clean title (without featured artists and version info)
             try:
-                clean_title = self.remove_featured_artists_aggressive(title)
+                clean_title = self.clean_title_for_search(title)
                 logging.debug(f"Cleaned title: '{title}' -> '{clean_title}'")
                 if clean_title != title and clean_title.strip():
                     clean_tracks = library_section.searchTracks(title=clean_title)
@@ -4804,6 +4804,59 @@ class PlaylistConverterThread(QThread):
             return title
             
         return cleaned_title
+    
+    def clean_title_for_search(self, title):
+        """Clean title for search by removing both featured artists AND version information"""
+        import re
+        
+        if not title:
+            return ""
+        
+        cleaned = title
+        
+        # Remove version information in parentheses and brackets
+        version_patterns = [
+            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^)]*\)',
+            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^\]]*\]'
+        ]
+        
+        for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove featured artist information
+        feat_patterns = [
+            r'\s*\(feat\.?\s+[^)]+\)',      # (feat. Artist)
+            r'\s*\(featuring\s+[^)]+\)',    # (featuring Artist)
+            r'\s*\(ft\.?\s+[^)]+\)',       # (ft. Artist)
+            r'\s*\(with\s+[^)]+\)',        # (with Artist)
+            r'\s*\(f\.\s+[^)]+\)',         # (f. Artist)
+            r'\s*\[feat\.?\s+[^\]]+\]',     # [feat. Artist]
+            r'\s*\[featuring\s+[^\]]+\]',   # [featuring Artist]
+            r'\s*\[ft\.?\s+[^\]]+\]',      # [ft. Artist]
+            r'\s*\[with\s+[^\]]+\]',       # [with Artist]
+            r'\s+feat\.?\s+.*$',           # feat. Artist (everything after)
+            r'\s+featuring\s+.*$',         # featuring Artist (everything after)
+            r'\s+ft\.?\s+.*$',            # ft. Artist (everything after)
+            r'\s+with\s+.*$',             # with Artist (everything after)
+            r'\s+f\.\s+.*$',              # f. Artist (everything after)
+            r',\s*feat\.?\s+.*$',         # , feat. Artist
+            r',\s*featuring\s+.*$',       # , featuring Artist
+            r',\s*ft\.?\s+.*$',          # , ft. Artist
+            r',\s*with\s+.*$',           # , with Artist
+        ]
+        
+        for pattern in feat_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.rstrip(' -,&()[]')
+        
+        # If we removed too much and left nothing meaningful, return original
+        if len(cleaned.strip()) < 2:
+            return title
+            
+        return cleaned
     
     def is_acceptable_version_match(self, source_title, plex_title):
         """
