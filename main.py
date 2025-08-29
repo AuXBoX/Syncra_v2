@@ -2814,7 +2814,8 @@ class ManualSearchDialog(QDialog):
         readable_track = f"{self.source_title} - {self.source_artist}" if self.source_artist else self.source_title
         self.setWindowTitle(f"Manual Search: {readable_track}")
         self.setModal(True)
-        self.resize(850, 650)  # Slightly larger to prevent button cutoff
+        self.resize(900, 700)  # Increased height to prevent button cutoff
+        self.setMinimumSize(850, 650)  # Set minimum size to ensure proper layout
         
         # Dark theme
         self.setStyleSheet("""
@@ -2924,19 +2925,12 @@ class ManualSearchDialog(QDialog):
         search_btn.clicked.connect(self.perform_search)
         search_btn.setFixedWidth(100)
         
-        # Add test button for debugging
-        test_btn = QPushButton("Test")
-        test_btn.clicked.connect(self.test_search)
-        test_btn.setFixedWidth(80)
-        test_btn.setToolTip("Test basic search functionality")
-        
         # Add clear button
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self.clear_search_inputs)
         clear_btn.setFixedWidth(80)
         
         button_layout.addWidget(search_btn)
-        button_layout.addWidget(test_btn)
         button_layout.addWidget(clear_btn)
         button_layout.addStretch()  # Push buttons to the left
         
@@ -2955,23 +2949,28 @@ class ManualSearchDialog(QDialog):
         self.results_list.itemDoubleClicked.connect(self.select_track)
         layout.addWidget(self.results_list)
         
-        # Action buttons - fix layout to prevent cutoff
+        # Action buttons - improved layout to prevent cutoff
         action_button_layout = QHBoxLayout()
+        action_button_layout.setContentsMargins(10, 10, 10, 10)  # Add margins
         
-        # Spacer
+        # Add some spacing
         action_button_layout.addStretch()
         
-        self.select_btn = QPushButton("Use Selected")
+        self.select_btn = QPushButton("✅ Use Selected")
         self.select_btn.clicked.connect(self.select_track)
         self.select_btn.setEnabled(False)
-        self.select_btn.setFixedWidth(120)
+        self.select_btn.setFixedWidth(140)
+        self.select_btn.setFixedHeight(35)  # Ensure consistent height
         
-        skip_btn = QPushButton("Skip Track")
+        skip_btn = QPushButton("❌ Skip Track")
         skip_btn.clicked.connect(self.skip_track)
-        skip_btn.setFixedWidth(100)
+        skip_btn.setFixedWidth(120)
+        skip_btn.setFixedHeight(35)  # Ensure consistent height
         
         action_button_layout.addWidget(self.select_btn)
+        action_button_layout.addSpacing(10)  # Add spacing between buttons
         action_button_layout.addWidget(skip_btn)
+        action_button_layout.addStretch()
         layout.addLayout(action_button_layout)
         
         # Enable select button when item is selected
@@ -3287,61 +3286,6 @@ class ManualSearchDialog(QDialog):
         self.selected_track = None
         self.reject()
         
-    def test_search(self):
-        """Test basic search functionality"""
-        self.status_label.setText("🧪 Testing search...")
-        self.results_list.clear()
-        
-        try:
-            # Test 1: Get all tracks (limited)
-            all_tracks = self.library_section.searchTracks()[:10]
-            test_item = QListWidgetItem(f"✅ Library accessible: {len(all_tracks)} tracks found")
-            test_item.setFlags(test_item.flags() & ~Qt.ItemIsSelectable)
-            self.results_list.addItem(test_item)
-            
-            # Test 2: Title search
-            title_search = self.library_section.searchTracks(title="the")[:5]
-            test_item2 = QListWidgetItem(f"✅ Title search 'the': {len(title_search)} tracks found")
-            test_item2.setFlags(test_item2.flags() & ~Qt.ItemIsSelectable)
-            self.results_list.addItem(test_item2)
-            
-            # Test 3: Search for common words
-            common_searches = ["love", "time", "you"]
-            for word in common_searches:
-                try:
-                    word_results = self.library_section.searchTracks(title=word)[:3]
-                    test_item3 = QListWidgetItem(f"✅ Search '{word}': {len(word_results)} tracks")
-                    test_item3.setFlags(test_item3.flags() & ~Qt.ItemIsSelectable)
-                    self.results_list.addItem(test_item3)
-                except Exception as e:
-                    test_item3 = QListWidgetItem(f"❌ Search '{word}' failed: {e}")
-                    test_item3.setFlags(test_item3.flags() & ~Qt.ItemIsSelectable)
-                    self.results_list.addItem(test_item3)
-            
-            # Show a few example tracks
-            for i, track in enumerate(all_tracks[:3]):
-                try:
-                    artist_name = "Unknown"
-                    if hasattr(track, 'artist') and track.artist():
-                        artist_name = track.artist().title
-                    elif hasattr(track, 'originalTitle') and track.originalTitle:
-                        artist_name = track.originalTitle
-                    example_item = QListWidgetItem(f"Example {i+1}: {track.title} - {artist_name}")
-                    example_item.setFlags(example_item.flags() & ~Qt.ItemIsSelectable)
-                    self.results_list.addItem(example_item)
-                except Exception as e:
-                    example_item = QListWidgetItem(f"Example {i+1}: Error - {e}")
-                    example_item.setFlags(example_item.flags() & ~Qt.ItemIsSelectable)
-                    self.results_list.addItem(example_item)
-                    
-            self.status_label.setText("🧪 Test completed")
-            
-        except Exception as e:
-            error_item = QListWidgetItem(f"❌ Test failed: {str(e)}")
-            error_item.setFlags(error_item.flags() & ~Qt.ItemIsSelectable)
-            self.results_list.addItem(error_item)
-            self.status_label.setText("❌ Test failed")
-    
     def remove_featured_artists(self, title):
         """Remove featured artist information to focus search on main track title"""
         import re
