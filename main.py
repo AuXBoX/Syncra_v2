@@ -1647,11 +1647,42 @@ class SyncThread(QThread):
                 logging.debug(f"Skipping search for very short title: '{title}'")
                 return None
             
-            # Limit search results for performance
-            all_tracks = library_section.searchTracks(title=title)
-            if len(all_tracks) > 100:
-                logging.debug(f"Too many search results ({len(all_tracks)}) for '{title}', limiting to first 100")
-                all_tracks = all_tracks[:100]
+            all_tracks = []
+            
+            # Try artist-first search if we have artist info (more efficient)
+            if artist and artist.strip():
+                try:
+                    logging.debug(f"Manual search: Trying artist-first search for '{artist}'")
+                    artist_results = library_section.searchArtists(title=artist)
+                    
+                    if artist_results:
+                        # Found artist(s), search within their tracks
+                        for artist_obj in artist_results[:3]:  # Check top 3 artist matches
+                            try:
+                                artist_tracks = artist_obj.tracks()
+                                logging.debug(f"Manual search: Found {len(artist_tracks)} tracks by '{artist_obj.title}'")
+                                
+                                # Search for title within this artist's tracks
+                                for track_obj in artist_tracks:
+                                    if title.lower() in track_obj.title.lower():
+                                        all_tracks.append(track_obj)
+                                        
+                            except Exception as e:
+                                logging.warning(f"Manual search: Error searching tracks for artist '{artist_obj.title}': {e}")
+                                
+                except Exception as e:
+                    logging.warning(f"Manual search: Artist search failed for '{artist}': {e}")
+            
+            # If artist search didn't yield results or no artist provided, fall back to title search
+            if not all_tracks:
+                # Log this library-wide search
+                self.log_library_wide_search(title, artist or "Unknown", "Manual search dialog - title search")
+                
+                # Limit search results for performance
+                all_tracks = library_section.searchTracks(title=title)
+                if len(all_tracks) > 100:
+                    logging.debug(f"Too many search results ({len(all_tracks)}) for '{title}', limiting to first 100")
+                    all_tracks = all_tracks[:100]
             
             best_match = None
             best_score = 0
@@ -1659,6 +1690,9 @@ class SyncThread(QThread):
             
             for plex_track in all_tracks:
                 plex_title = plex_track.title if plex_track.title else ""
+                
+                # Debug: Log the exact track details
+                logging.debug(f"Plex track found: ID={plex_track.ratingKey}, Title='{plex_title}', Artist='{plex_track.originalTitle or (plex_track.artist().title if plex_track.artist() else 'Unknown')}'")
                 
                 # Apply version filtering before scoring
                 if not self.is_acceptable_version_match(title, plex_title):
@@ -1668,10 +1702,18 @@ class SyncThread(QThread):
                 title_score = fuzz.token_set_ratio(title.lower(), plex_title.lower())
                 
                 artist_score = 0
+                plex_artist = ""
                 if artist and plex_track.originalTitle:
-                    artist_score = fuzz.token_set_ratio(artist.lower(), plex_track.originalTitle.lower())
+                    plex_artist = plex_track.originalTitle
+                    artist_score = fuzz.token_set_ratio(artist.lower(), plex_artist.lower())
                 elif plex_track.artist():
-                    artist_score = fuzz.token_set_ratio(artist.lower(), plex_track.artist().title.lower())
+                    plex_artist = plex_track.artist().title
+                    artist_score = fuzz.token_set_ratio(artist.lower(), plex_artist.lower())
+                
+                # Apply minimum artist score requirement to prevent wrong artist matches
+                if artist and artist_score < 50:  # Minimum 50% artist similarity required
+                    logging.debug(f"Skipping due to low artist match: '{artist}' vs '{plex_artist}' (score: {artist_score})")
+                    continue
                 
                 combined_score = (title_score * 0.7) + (artist_score * 0.3)
                 
@@ -1910,16 +1952,17 @@ class PlaylistSortingThread(QThread):
             for extra in plex_extras:
                 extra_clean = extra.lower().strip()
                 
-                # Skip if it's an allowed type
-                if any(allowed in extra_clean for allowed in allowed_when_source_clean):
-                    continue
+                # Check if it's an allowed type - if not, reject it
+                is_allowed = any(allowed in extra_clean for allowed in allowed_when_source_clean)
+                    
+                if not is_allowed:
+                    # Reject ANY version info that's not explicitly allowed
+                    logging.debug(f"Rejecting version: '{plex_title}' (contains '{extra}') for clean source: '{source_title}'")
+                    return False
                 
                 # Allow live versions - they'll get lower preference but still be available
                 # (Removed automatic rejection of live versions)
                 
-                # Only reject very specific problematic remixes
-                if any(bad_remix in extra_clean for bad_remix in ['extended mix', 'club mix', 'dance mix', 'house mix']):
-                    logging.debug(f"Rejecting specific remix: '{plex_title}' for clean source: '{source_title}'")
                     return False
                 
                 # Allow featuring/with variations (user requested)
@@ -2061,18 +2104,62 @@ class PlaylistSortingThread(QThread):
         return cleaned
     
     def clean_artist_name(self, artist):
-        """Clean artist name for better matching"""
+        """Clean artist name for better matching - removes remaster info, years, and featured artists"""
         if not artist:
             return ""
         
         import re
         
-        # Remove "feat" mentions from artist field too
-        cleaned = re.sub(r'\s*feat\.?\s+.+$', '', artist, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\s*ft\.?\s+.+$', '', artist, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\s*featuring\s+.+$', '', artist, flags=re.IGNORECASE)
+        # Remove remaster information and years from artist field
+        # Patterns like "2015 Remaster - Van Halen" -> "Van Halen"
+        remaster_patterns = [
+            r'^\d{4}\s*remaster\s*-\s*',     # "2015 Remaster - " at start
+            r'^\d{4}\s*remastered\s*-\s*',   # "2015 Remastered - " at start
+            r'^\s*remaster\s*-\s*',          # "Remaster - " at start
+            r'^\s*remastered\s*-\s*',        # "Remastered - " at start
+            r'\s*-\s*\d{4}\s*remaster$',     # " - 2015 Remaster" at end
+            r'\s*-\s*\d{4}\s*remastered$',   # " - 2015 Remastered" at end
+            r'\s*-\s*remaster$',             # " - Remaster" at end
+            r'\s*-\s*remastered$',           # " - Remastered" at end
+        ]
         
-        return cleaned.strip()
+        cleaned = artist
+        for pattern in remaster_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove version information in parentheses/brackets from artist field
+        version_patterns = [
+            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^)]*\)',
+            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^\]]*\]'
+        ]
+        
+        for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove "feat" mentions from artist field
+        feat_patterns = [
+            r'\s*feat\.?\s+.+$',      # feat. Artist (everything after)
+            r'\s*ft\.?\s+.+$',        # ft. Artist (everything after)
+            r'\s*featuring\s+.+$',    # featuring Artist (everything after)
+            r'\s*with\s+.+$',         # with Artist (everything after)
+            r',\s*feat\.?\s+.+$',     # , feat. Artist
+            r',\s*ft\.?\s+.+$',       # , ft. Artist
+            r',\s*featuring\s+.+$',   # , featuring Artist
+            r',\s*with\s+.+$',        # , with Artist
+        ]
+        
+        for pattern in feat_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip(' -,&()[]')
+        
+        # If we removed too much and left nothing meaningful, return original
+        if len(cleaned.strip()) < 1:
+            return artist
+            
+        return cleaned
 
 class TimeoutException(Exception):
     pass
@@ -2475,13 +2562,252 @@ class ManualSearchDialog(QDialog):
         
         self.setup_ui()
         
+    def clean_artist_name(self, artist):
+        """Clean artist name for better matching - removes remaster info, years, and featured artists"""
+        if not artist:
+            return ""
+        
+        import re
+        
+        # Remove remaster information and years from artist field
+        # Patterns like "2015 Remaster - Van Halen" -> "Van Halen"
+        remaster_patterns = [
+            r'^\d{4}\s*remaster\s*-\s*',     # "2015 Remaster - " at start
+            r'^\d{4}\s*remastered\s*-\s*',   # "2015 Remastered - " at start
+            r'^\s*remaster\s*-\s*',          # "Remaster - " at start
+            r'^\s*remastered\s*-\s*',        # "Remastered - " at start
+            r'\s*-\s*\d{4}\s*remaster$',     # " - 2015 Remaster" at end
+            r'\s*-\s*\d{4}\s*remastered$',   # " - 2015 Remastered" at end
+            r'\s*-\s*remaster$',             # " - Remaster" at end
+            r'\s*-\s*remastered$',           # " - Remastered" at end
+        ]
+        
+        cleaned = artist
+        for pattern in remaster_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove version information in parentheses/brackets from artist field
+        version_patterns = [
+            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^)]*\)',
+            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^\]]*\]'
+        ]
+        
+        for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove "feat" mentions from artist field
+        feat_patterns = [
+            r'\s*feat\.?\s+.+$',      # feat. Artist (everything after)
+            r'\s*ft\.?\s+.+$',        # ft. Artist (everything after)
+            r'\s*featuring\s+.+$',    # featuring Artist (everything after)
+            r'\s*with\s+.+$',         # with Artist (everything after)
+            r',\s*feat\.?\s+.+$',     # , feat. Artist
+            r',\s*ft\.?\s+.+$',       # , ft. Artist
+            r',\s*featuring\s+.+$',   # , featuring Artist
+            r',\s*with\s+.+$',        # , with Artist
+        ]
+        
+        for pattern in feat_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip(' -,&()[]')
+        
+        # If we removed too much and left nothing meaningful, return original
+        if len(cleaned.strip()) < 1:
+            return artist
+            
+        return cleaned
+        
     def parse_track_info(self, track):
-        """Parse track string into title and artist"""
-        parts = track.split(' - ', 1)
-        if len(parts) == 2:
-            return parts[0].strip(), parts[1].strip()
+        """Parse track string into title and artist - handles both string and dict formats"""
+        # Handle new structured format with album info
+        if isinstance(track, dict):
+            title = track.get('title', '').strip()
+            artist = track.get('artist', '').strip()
+            # Clean the artist name to remove remaster info, years, etc.
+            artist = self.clean_artist_name(artist)
+            return title, artist
+        
+        # Handle legacy string format
+        if isinstance(track, str):
+            parts = track.split(' - ', 1)
+            if len(parts) == 2:
+                title = parts[0].strip()
+                artist = parts[1].strip()
+                # Clean the artist name to remove remaster info, years, etc.
+                artist = self.clean_artist_name(artist)
+                return title, artist
+            else:
+                return track.strip(), ''
+        
+        return '', ''
+    
+    def log_library_wide_search(self, title, artist, reason):
+        """Log tracks that cause library-wide searches to a separate file for easy identification"""
+        import datetime
+        
+        log_file = "library_wide_searches.log"
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        log_entry = f"[{timestamp}] LIBRARY-WIDE SEARCH: '{title}' by '{artist}' - Reason: {reason}\n"
+        
+        try:
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+        except Exception as e:
+            logging.warning(f"Failed to write to library search log: {e}")
+    
+    def fuzzy_title_match(self, search_title, plex_title):
+        """
+        Fuzzy matching for titles to handle common variations like apostrophes, spacing, etc.
+        """
+        import re
+        
+        if not search_title or not plex_title:
+            return False
+        
+        # Normalize both titles for comparison
+        def normalize_title(title):
+            normalized = title.lower().strip()
+            # Remove/normalize apostrophes and quotes
+            normalized = re.sub(r"['`´'']", "", normalized)  # Remove various apostrophe types
+            # Normalize spacing around 'n' (and -> and, n -> n)
+            normalized = re.sub(r'\s+n\s+', ' n ', normalized)
+            # Remove extra whitespace
+            normalized = re.sub(r'\s+', ' ', normalized).strip()
+            return normalized
+        
+        search_normalized = normalize_title(search_title)
+        plex_normalized = normalize_title(plex_title)
+        
+        # Try exact match first
+        if search_normalized == plex_normalized:
+            return True
+        
+        # Try substring match
+        if search_normalized in plex_normalized or plex_normalized in search_normalized:
+            return True
+        
+        # Try fuzzy matching for very similar titles
+        try:
+            from fuzzywuzzy import fuzz
+            similarity = fuzz.ratio(search_normalized, plex_normalized)
+            return similarity >= 85  # High threshold for title matching within artist
+        except ImportError:
+            return False
+    
+    def clean_title_for_search(self, title):
+        """Clean title for search by removing both featured artists AND version information"""
+        import re
+        
+        if not title:
+            return ""
+        
+        cleaned = title
+        
+        # NEW: Remove dash and everything after it (until brackets)
+        # This handles titles like "Accidentally In Love - From "Shrek 2" Soundtrack"
+        # Remove "-" and everything after it, but stop at brackets/parentheses
+        dash_already_processed = False
+        if ' - ' in cleaned:
+            # Find the first dash with spaces
+            dash_index = cleaned.find(' - ')
+            if dash_index != -1:
+                # Check if there are brackets/parentheses after the dash
+                remaining_text = cleaned[dash_index:]
+                # Look for opening bracket/parenthesis
+                bracket_match = re.search(r'[()\[\]]', remaining_text)
+                if bracket_match:
+                    # Keep everything up to dash, then everything from the bracket onward
+                    before_dash = cleaned[:dash_index]
+                    bracket_start = dash_index + bracket_match.start()
+                    after_bracket = cleaned[bracket_start:]
+                    cleaned = before_dash + ' ' + after_bracket
+                    dash_already_processed = True  # Skip dash version patterns later
+                else:
+                    # No brackets found, remove everything after dash
+                    cleaned = cleaned[:dash_index]
+                    dash_already_processed = False
         else:
-            return track.strip(), ''
+            dash_already_processed = False
+
+        # Remove version information in parentheses and brackets
+        version_patterns = [
+            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^)]*\)',
+            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^\]]*\]'
+        ]
+        
+        for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove semicolon-separated version info first (like "; 2017 Remaster")
+        semicolon_patterns = [
+            r'\s*;\s*(?:\d{4}\s+)?(?:remaster|remastered)(?:\s+\d{4})?.*$',
+            r'\s*;\s*(?:\d{4}\s+)?(?:remastered\s+)?(?:edition|version).*$',
+        ]
+        
+        for pattern in semicolon_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove version information that appears after dashes in the main title
+        # Patterns like "Song Title - Remastered", "Track Name - 2021 Remaster", etc.
+        # Skip if dash was already processed with bracket preservation
+        if not dash_already_processed:
+            dash_version_patterns = [
+                r'\s*-\s*(?:\d{4}\s+)?(?:remaster|remastered)(?:\s+\d{4})?.*$',  # - Remastered, - 2021 Remaster
+                r'\s*-\s*(?:\d{4}\s+)?(?:remastered\s+)?(?:edition|version).*$',  # - Edition, - Version, - 2021 Edition
+                r'\s*-\s*(?:deluxe|anniversary|special)\s*(?:edition|version)?.*$',  # - Deluxe, - Anniversary Edition
+                r'\s*-\s*(?:stereo|mono).*$',  # - Stereo, - Mono
+                r'\s*-\s*(?:explicit|clean).*$',  # - Explicit, - Clean
+                r'\s*-\s*(?:radio|single|album)\s*(?:edit|version)?.*$',  # - Radio Edit, - Single Version
+                r'\s*-\s*live(?:\s+at\s+[^-]*)?.*$',  # - Live, - Live at Venue
+                r'\s*-\s*acoustic.*$',  # - Acoustic
+                r'\s*-\s*unplugged.*$',  # - Unplugged
+                r'\s*-\s*demo.*$',  # - Demo
+            ]
+            
+            for pattern in dash_version_patterns:
+                cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # Remove featured artist information
+        feat_patterns = [
+            r'\s*\(feat\.?\s+[^)]+\)',      # (feat. Artist)
+            r'\s*\(featuring\s+[^)]+\)',    # (featuring Artist)
+            r'\s*\(ft\.?\s+[^)]+\)',       # (ft. Artist)
+            r'\s*\(with\s+[^)]+\)',        # (with Artist)
+            r'\s*\(f\.\s+[^)]+\)',         # (f. Artist)
+            r'\s*\[feat\.?\s+[^\]]+\]',     # [feat. Artist]
+            r'\s*\[featuring\s+[^\]]+\]',   # [featuring Artist]
+            r'\s*\[ft\.?\s+[^\]]+\]',      # [ft. Artist]
+            r'\s*\[with\s+[^\]]+\]',       # [with Artist]
+            r'\s+feat\.?\s+.*$',           # feat. Artist (everything after)
+            r'\s+featuring\s+.*$',         # featuring Artist (everything after)
+            r'\s+ft\.?\s+.*$',            # ft. Artist (everything after)
+            r'\s+with\s+.*$',             # with Artist (everything after)
+            r'\s+f\.\s+.*$',              # f. Artist (everything after)
+            r',\s*feat\.?\s+.*$',         # , feat. Artist
+            r',\s*featuring\s+.*$',       # , featuring Artist
+            r',\s*ft\.?\s+.*$',          # , ft. Artist
+            r',\s*with\s+.*$',           # , with Artist
+        ]
+        
+        for pattern in feat_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.rstrip(' -,&')
+        
+        # Don't remove closing parentheses/brackets that might be part of the song title
+        # Only remove unmatched opening brackets or obvious trailing punctuation
+        
+        # If we removed too much and left nothing meaningful, return original
+        if len(cleaned.strip()) < 2:
+            return title
+            
+        return cleaned
         
     def setup_ui(self):
         # Create readable title from parsed track info
@@ -2547,11 +2873,15 @@ class ManualSearchDialog(QDialog):
         header.setStyleSheet("font-size: 16px; font-weight: bold; color: #00bcd4; margin-bottom: 10px;")
         layout.addWidget(header)
         
-        # Search input
-        search_layout = QHBoxLayout()
-        search_label = QLabel("Search:")
+        # Search inputs - separate title and artist fields
+        search_layout = QVBoxLayout()
+        
+        # Title search row
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Title:")
+        title_label.setFixedWidth(50)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Enter track title or artist...")
+        self.search_input.setPlaceholderText("Enter track title...")
         
         # Pre-populate with source track title (clean version without featured artists)
         title_part = self.source_title.replace("Manual Search: ", "")
@@ -2566,6 +2896,29 @@ class ManualSearchDialog(QDialog):
         self.search_input.setReadOnly(False)
         self.search_input.setEnabled(True)
         
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(self.search_input)
+        
+        # Artist search row
+        artist_layout = QHBoxLayout()
+        artist_label = QLabel("Artist:")
+        artist_label.setFixedWidth(50)
+        self.artist_input = QLineEdit()
+        self.artist_input.setPlaceholderText("Enter artist name (optional)...")
+        
+        # Pre-populate with source artist if available
+        if self.source_artist:
+            self.artist_input.setText(self.source_artist)
+        
+        # Search on Enter for artist field too
+        self.artist_input.returnPressed.connect(self.perform_search)
+        
+        artist_layout.addWidget(artist_label)
+        artist_layout.addWidget(self.artist_input)
+        
+        # Button row
+        button_layout = QHBoxLayout()
+        
         # Add manual search button
         search_btn = QPushButton("Search")
         search_btn.clicked.connect(self.perform_search)
@@ -2577,10 +2930,19 @@ class ManualSearchDialog(QDialog):
         test_btn.setFixedWidth(80)
         test_btn.setToolTip("Test basic search functionality")
         
-        search_layout.addWidget(search_label)
-        search_layout.addWidget(self.search_input)
-        search_layout.addWidget(search_btn)
-        search_layout.addWidget(test_btn)
+        # Add clear button
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self.clear_search_inputs)
+        clear_btn.setFixedWidth(80)
+        
+        button_layout.addWidget(search_btn)
+        button_layout.addWidget(test_btn)
+        button_layout.addWidget(clear_btn)
+        button_layout.addStretch()  # Push buttons to the left
+        
+        search_layout.addLayout(title_layout)
+        search_layout.addLayout(artist_layout)
+        search_layout.addLayout(button_layout)
         layout.addLayout(search_layout)
         
         # Status label
@@ -2594,15 +2956,10 @@ class ManualSearchDialog(QDialog):
         layout.addWidget(self.results_list)
         
         # Action buttons - fix layout to prevent cutoff
-        button_layout = QHBoxLayout()
-        
-        # Clear search button
-        clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.clear_search)
-        clear_btn.setFixedWidth(100)
+        action_button_layout = QHBoxLayout()
         
         # Spacer
-        button_layout.addStretch()
+        action_button_layout.addStretch()
         
         self.select_btn = QPushButton("Use Selected")
         self.select_btn.clicked.connect(self.select_track)
@@ -2613,10 +2970,9 @@ class ManualSearchDialog(QDialog):
         skip_btn.clicked.connect(self.skip_track)
         skip_btn.setFixedWidth(100)
         
-        button_layout.addWidget(clear_btn)
-        button_layout.addWidget(self.select_btn)
-        button_layout.addWidget(skip_btn)
-        layout.addLayout(button_layout)
+        action_button_layout.addWidget(self.select_btn)
+        action_button_layout.addWidget(skip_btn)
+        layout.addLayout(action_button_layout)
         
         # Enable select button when item is selected
         self.results_list.itemSelectionChanged.connect(self.on_selection_changed)
@@ -2629,34 +2985,32 @@ class ManualSearchDialog(QDialog):
     # Removed perform_initial_search method - no automatic search
         
     def perform_search(self):
-        """Search for tracks based on input with smart artist filtering for short titles"""
+        """Search for tracks based on title and artist inputs with smart filtering"""
         search_text = self.search_input.text().strip()
-        if not search_text:
+        artist_text = self.artist_input.text().strip()
+        
+        if not search_text and not artist_text:
             self.results_list.clear()
-            self.status_label.setText("Enter search terms...")
+            self.status_label.setText("Enter title or artist to search...")
             return
             
-        # Determine if the ORIGINAL source title is short and needs artist filtering
-        is_short_title = len(self.source_title.strip()) <= 4
-        use_artist_filter = is_short_title and self.source_artist
+        # Determine search strategy based on inputs
+        has_artist_filter = bool(artist_text)
+        is_short_title = len(search_text.strip()) <= 4 if search_text else False
         
-        if use_artist_filter:
-            self.status_label.setText(f"🔍 Searching {self.source_artist} tracks only...")
-        else:
-            self.status_label.setText("🔍 Searching...")
+        # Build status message
+        if has_artist_filter and search_text:
+            self.status_label.setText(f"🔍 Searching '{search_text}' by '{artist_text}'...")
+        elif has_artist_filter:
+            self.status_label.setText(f"🔍 Searching all tracks by '{artist_text}'...")
+        elif search_text:
+            self.status_label.setText(f"🔍 Searching for '{search_text}'...")
+        
         self.results_list.clear()
         
-        # Debug logging to see what's happening
-        logging.info(f"DEBUG: source_track='{self.source_track}'")
-        logging.info(f"DEBUG: source_title='{self.source_title}' (length: {len(self.source_title.strip())})")
-        logging.info(f"DEBUG: source_artist='{self.source_artist}'")
-        logging.info(f"DEBUG: search_text='{search_text}'")
-        logging.info(f"DEBUG: is_short_title={is_short_title}, use_artist_filter={use_artist_filter}")
-        
-        if use_artist_filter:
-            logging.info(f"USING ARTIST FILTER: Will search only '{self.source_artist}' tracks, ignoring broad search for '{search_text}'")
-        else:
-            logging.info(f"USING BROAD SEARCH: Will search all tracks for '{search_text}'")
+        # Debug logging
+        logging.info(f"DEBUG: Manual search - title='{search_text}', artist='{artist_text}'")
+        logging.info(f"DEBUG: has_artist_filter={has_artist_filter}, is_short_title={is_short_title}")
             
         try:
             self.results_list.clear()
@@ -2664,28 +3018,81 @@ class ManualSearchDialog(QDialog):
             # Try multiple search approaches using correct Plex API
             all_tracks = []
             
-            if use_artist_filter:
-                # For short titles, ONLY search by artist to avoid too many irrelevant results
+            if has_artist_filter:
+                # Search by artist first to narrow down results
                 try:
-                    # Get all tracks and filter by artist manually (Plex API doesn't support artist filter)
-                    all_library_tracks = self.library_section.searchTracks()
+                    # Use Plex searchArtists API for better performance
+                    artists = self.library_section.searchArtists(title=artist_text)
                     artist_tracks = []
                     
-                    for track in all_library_tracks:
-                        track_artist = ""
-                        if hasattr(track, 'originalTitle') and track.originalTitle:
-                            track_artist = track.originalTitle
-                        elif hasattr(track, 'artist') and track.artist():
-                            track_artist = track.artist().title
-                        
-                        # Check for artist match (fuzzy)
-                        if track_artist and self.source_artist.lower() in track_artist.lower():
-                            artist_tracks.append(track)
+                    for artist in artists:
+                        try:
+                            # Get tracks from this artist
+                            tracks = artist.tracks()
+                            
+                            # If we also have a title filter, apply it
+                            if search_text:
+                                clean_search_text = self.clean_title_for_search(search_text)
+                                for track in tracks:
+                                    # Check if title matches (fuzzy or exact)
+                                    if (search_text.lower() in track.title.lower() or 
+                                        clean_search_text.lower() in track.title.lower() or
+                                        self.fuzzy_title_match(search_text, track.title)):
+                                        artist_tracks.append(track)
+                            else:
+                                # No title filter, add all tracks from this artist
+                                artist_tracks.extend(tracks)
+                                
+                        except Exception as e:
+                            logging.warning(f"Error getting tracks for artist {artist.title}: {e}")
                     
                     all_tracks.extend(artist_tracks)
-                    logging.debug(f"Manual artist-only search for '{self.source_artist}' found {len(artist_tracks)} tracks")
+                    logging.debug(f"Artist search for '{artist_text}' found {len(artist_tracks)} tracks")
+                    
+                    # If no results from artist search, fall back to manual filtering
+                    if not artist_tracks:
+                        logging.debug("No results from artist search, asking user before library-wide search...")
+                        
+                        # Show confirmation dialog to user
+                        user_choice = self.show_artist_not_found_dialog(artist_text)
+                        
+                        if user_choice == "skip":
+                            # User chose to skip the track
+                            self.status_label.setText(f"❌ Artist '{artist_text}' not found - track skipped by user")
+                            skip_item = QListWidgetItem(f"❌ Artist '{artist_text}' not found in library")
+                            skip_item.setFlags(skip_item.flags() & ~Qt.ItemIsSelectable)
+                            self.results_list.addItem(skip_item)
+                            
+                            skip_info = QListWidgetItem("Track skipped by user choice.")
+                            skip_info.setFlags(skip_info.flags() & ~Qt.ItemIsSelectable)
+                            self.results_list.addItem(skip_info)
+                            return  # Exit the search method
+                        
+                        # User chose to continue with library-wide search
+                        self.status_label.setText(f"🔍 Continuing with library-wide search...")
+                        logging.debug("User chose to continue with library-wide search...")
+                        
+                        all_library_tracks = self.library_section.searchTracks()
+                        
+                        for track in all_library_tracks:
+                            track_artist = ""
+                            if hasattr(track, 'originalTitle') and track.originalTitle:
+                                track_artist = track.originalTitle
+                            elif hasattr(track, 'artist') and track.artist():
+                                track_artist = track.artist().title
+                            
+                            # Check for artist match (fuzzy)
+                            if track_artist and artist_text.lower() in track_artist.lower():
+                                # If we also have a title filter, apply it
+                                if not search_text or (search_text.lower() in track.title.lower() or 
+                                                     self.fuzzy_title_match(search_text, track.title)):
+                                    artist_tracks.append(track)
+                        
+                        all_tracks.extend(artist_tracks)
+                        logging.debug(f"Manual artist filtering found {len(artist_tracks)} additional tracks")
+                        
                 except Exception as e:
-                    logging.warning(f"Manual artist search failed: {e}")
+                    logging.warning(f"Artist search failed: {e}")
             else:
                 # For longer titles, do normal title searches
                 # 1. Title search with exact match
@@ -2710,7 +3117,7 @@ class ManualSearchDialog(QDialog):
                         logging.warning(f"Clean title search failed: {e}")
             
             # 3. Only do word search if we don't have enough results and the search is long enough (not for short titles)
-            if not use_artist_filter and len(all_tracks) < 20 and len(clean_search_text.split()) > 1:
+            if not has_artist_filter and len(all_tracks) < 20 and len(clean_search_text.split()) > 1:
                 # Search individual words from cleaned text, but be more selective
                 search_words = [word.strip('()[]') for word in clean_search_text.split() if len(word.strip('()[]')) > 3]
                 # Only use first 2 words to prevent too many results
@@ -2724,7 +3131,7 @@ class ManualSearchDialog(QDialog):
                         logging.warning(f"Word title search for '{word}' failed: {e}")
             
             # 4. Try searching all tracks and filter manually (as fallback, but not for short titles)
-            if not use_artist_filter and not all_tracks:
+            if not has_artist_filter and not all_tracks:
                 try:
                     # Get all tracks and filter manually
                     logging.debug("Trying manual search through all tracks...")
@@ -2780,25 +3187,39 @@ class ManualSearchDialog(QDialog):
                     elif hasattr(track, 'artist') and track.artist():
                         artist_name = track.artist().title
                     
-                    # Calculate relevance score with artist weighting
-                    title_score = fuzz.partial_ratio(search_text.lower(), track.title.lower())
+                    # Calculate relevance score with separate title and artist scoring
+                    title_score = 0
+                    artist_score = 0
                     
-                    # For short titles, heavily weight artist matching
-                    if use_artist_filter:
-                        artist_score = fuzz.partial_ratio(self.source_artist.lower(), artist_name.lower())
-                        # For short titles, artist match is very important
-                        if artist_score >= 80:
-                            combined_score = (title_score * 0.6) + (artist_score * 0.4) + 10  # Bonus for good artist match
-                        else:
-                            combined_score = (title_score * 0.8) + (artist_score * 0.2)
+                    # Calculate title score if we have a title search
+                    if search_text:
+                        title_score = fuzz.partial_ratio(search_text.lower(), track.title.lower())
+                        # Exact title matches get a bonus
+                        if track.title.lower() == search_text.lower():
+                            title_score += 15
+                    
+                    # Calculate artist score if we have an artist search
+                    if artist_text:
+                        artist_score = fuzz.partial_ratio(artist_text.lower(), artist_name.lower())
+                        # Exact artist matches get a bonus
+                        if artist_name.lower() == artist_text.lower():
+                            artist_score += 15
+                    
+                    # Combine scores based on what we're searching for
+                    if search_text and artist_text:
+                        # Both title and artist specified - weight both
+                        combined_score = (title_score * 0.7) + (artist_score * 0.3)
+                        # Bonus if both match well
+                        if title_score >= 80 and artist_score >= 80:
+                            combined_score += 10
+                    elif search_text:
+                        # Only title specified
+                        combined_score = title_score
+                    elif artist_text:
+                        # Only artist specified
+                        combined_score = artist_score
                     else:
-                        # For longer titles, artist is less critical
-                        artist_score = fuzz.partial_ratio(search_text.lower(), artist_name.lower())
-                        combined_score = max(title_score, artist_score)
-                    
-                    # Exact title matches get a bonus
-                    if track.title.lower() == search_text.lower():
-                        combined_score += 15
+                        combined_score = 0
                     
                     scored_tracks.append((combined_score, track, artist_name, title_score, artist_score))
                     
@@ -2809,14 +3230,14 @@ class ManualSearchDialog(QDialog):
             # Sort by score (highest first) and add to list
             scored_tracks.sort(key=lambda x: x[0], reverse=True)
             
-            # For short titles with artist info, show more detailed scoring
+            # Display results with appropriate scoring information
             for score, track, artist_name, title_score, artist_score in scored_tracks[:50]:  # Show top 50
                 display_text = f"{track.title} - {artist_name}"
                 
-                if use_artist_filter and score < 80:
-                    # Show detailed scores for short title searches
+                # Show detailed scores when both title and artist are searched and score is not perfect
+                if search_text and artist_text and score < 95:
                     display_text += f" (Title: {title_score}%, Artist: {artist_score}%)"
-                elif score < 60:
+                elif score < 70:
                     # Show combined score for lower matches
                     display_text += f" ({score:.0f}% match)"
                 
@@ -2832,8 +3253,8 @@ class ManualSearchDialog(QDialog):
                 self.status_label.setText("❌ No results found")
             else:
                 status_msg = f"✅ Found {len(scored_tracks)} matches"
-                if use_artist_filter:
-                    status_msg += f" (filtered by artist: {self.source_artist})"
+                if has_artist_filter:
+                    status_msg += f" (filtered by artist: {artist_text})"
                 self.status_label.setText(status_msg)
                     
         except Exception as e:
@@ -2962,11 +3383,63 @@ class ManualSearchDialog(QDialog):
             
         return cleaned_title
     
-    def clear_search(self):
-        """Clear search input and results"""
+    def show_artist_not_found_dialog(self, artist_name):
+        """Show dialog when artist is not found, asking user whether to skip track or continue with library-wide search"""
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Artist Not Found")
+        dialog.setIcon(QMessageBox.Warning)
+        
+        # Set dialog text
+        dialog.setText(f"🎤 Artist '{artist_name}' was not found in your library.")
+        dialog.setInformativeText("Would you like to skip this track or continue with a library-wide search?\n\n⚠️ Library-wide search may be slow and return many irrelevant results.")
+        
+        # Create custom buttons
+        skip_btn = dialog.addButton("❌ Skip Track", QMessageBox.RejectRole)
+        continue_btn = dialog.addButton("🔍 Continue Search", QMessageBox.AcceptRole)
+        
+        # Style the dialog to match the app theme
+        dialog.setStyleSheet("""
+            QMessageBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QMessageBox QLabel {
+                color: #ffffff;
+                font-size: 14px;
+            }
+            QMessageBox QPushButton {
+                background-color: #00bcd4;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 100px;
+            }
+            QMessageBox QPushButton:hover {
+                background-color: #00acc1;
+            }
+        """)
+        
+        # Execute dialog and return user choice
+        result = dialog.exec_()
+        
+        if dialog.clickedButton() == skip_btn:
+            return "skip"
+        else:
+            return "continue"
+    
+    def clear_search_inputs(self):
+        """Clear both search inputs and results"""
         self.search_input.clear()
+        self.artist_input.clear()
         self.results_list.clear()
+        self.status_label.setText("Ready to search...")
         self.search_input.setFocus()
+        
+    def clear_search(self):
+        """Clear search input and results (legacy method for compatibility)"""
+        self.clear_search_inputs()
         
     def showEvent(self, event):
         """Ensure search input gets focus when dialog is shown"""
@@ -4082,6 +4555,8 @@ class PlaylistConverterThread(QThread):
     track_match_confirmation_needed = pyqtSignal(str, object, float)  # source_track, plex_track, score
     # NEW: Signal for manual search
     manual_search_needed = pyqtSignal(str, object)  # source_track, library_section
+    # NEW: Signal for artist not found
+    artist_not_found_signal = pyqtSignal(str, str, object)  # track_info, artist_name, library_section
 
     def __init__(self, playlist_source, plex_server, library_section):
         super().__init__()
@@ -4155,7 +4630,17 @@ class PlaylistConverterThread(QThread):
 
     def process_tidal_track(self, item):
         try:
-            return f"{item['title']} - {item['artist']['name']}"
+            # Extract album information from Tidal
+            album_name = item.get('album', {}).get('title', 'Unknown Album') if item.get('album') else 'Unknown Album'
+            
+            # Store track with album info in a structured format
+            track_info = {
+                'title': item['title'],
+                'artist': item['artist']['name'],
+                'album': album_name,
+                'display': f"{item['title']} - {item['artist']['name']}"
+            }
+            return track_info
         except Exception as e:
             logging.error(f"Error processing Tidal track: {str(e)}")
             return None
@@ -4253,7 +4738,19 @@ class PlaylistConverterThread(QThread):
                                     if track.get('artists') and len(track['artists']) > 0:
                                         artist_name = track['artists'][0]['name']
                                     
-                                    tracks.append(f"{track['name']} - {artist_name}")
+                                    # Extract album information
+                                    album_name = 'Unknown Album'
+                                    if track.get('album') and track['album'].get('name'):
+                                        album_name = track['album']['name']
+                                    
+                                    # Store track with album info in a structured format
+                                    track_info = {
+                                        'title': track['name'],
+                                        'artist': artist_name,
+                                        'album': album_name,
+                                        'display': f"{track['name']} - {artist_name}"
+                                    }
+                                    tracks.append(track_info)
                                     processed_tracks += 1
                                     
                                     # Update progress
@@ -4304,7 +4801,17 @@ class PlaylistConverterThread(QThread):
         
         tracks = []
         for track in playlist.tracks:
-            tracks.append(f"{track.title} - {track.artist.name}")
+            # Extract album information from Deezer
+            album_name = track.album.title if hasattr(track, 'album') and track.album else 'Unknown Album'
+            
+            # Store track with album info in a structured format
+            track_info = {
+                'title': track.title,
+                'artist': track.artist.name,
+                'album': album_name,
+                'display': f"{track.title} - {track.artist.name}"
+            }
+            tracks.append(track_info)
             self.progress_update.emit(int(len(tracks) / playlist.nb_tracks * 50))
 
         playlist_name = playlist.title
@@ -4395,7 +4902,12 @@ class PlaylistConverterThread(QThread):
                 if not_found_tracks:
                     logging.warning(f"Could not find matches for {len(not_found_tracks)} tracks in your Plex library")
                     for track in not_found_tracks:
-                        logging.warning(f"Not found: {track}")
+                        # Handle both string and dict formats for display
+                        if isinstance(track, dict):
+                            display_track = track.get('display', f"{track.get('title', '')} - {track.get('artist', '')}")
+                        else:
+                            display_track = str(track)
+                        logging.warning(f"Not found: {display_track}")
 
                 self.final_playlist_name = final_name
             else:
@@ -4404,12 +4916,68 @@ class PlaylistConverterThread(QThread):
             logging.error(f"Error creating Plex playlist: {str(e)}", exc_info=True)
             raise ValueError(f"Error creating Plex playlist: {e}")
 
+    def log_library_wide_search(self, title, artist, reason):
+        """Log tracks that cause library-wide searches to a separate file for easy identification"""
+        import datetime
+        
+        log_file = "library_wide_searches.log"
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        log_entry = f"[{timestamp}] LIBRARY-WIDE SEARCH: '{title}' by '{artist}' - Reason: {reason}\n"
+        
+        try:
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+        except Exception as e:
+            logging.warning(f"Failed to write to library search log: {e}")
+
+    def fuzzy_title_match(self, search_title, plex_title):
+        """
+        Fuzzy matching for titles to handle common variations like apostrophes, spacing, etc.
+        """
+        import re
+        
+        if not search_title or not plex_title:
+            return False
+        
+        # Normalize both titles for comparison
+        def normalize_title(title):
+            normalized = title.lower().strip()
+            # Remove/normalize apostrophes and quotes
+            normalized = re.sub(r"['`´'']", "", normalized)  # Remove various apostrophe types
+            # Normalize spacing around 'n' (and -> and, n -> n)
+            normalized = re.sub(r'\s+n\s+', ' n ', normalized)
+            # Remove extra whitespace
+            normalized = re.sub(r'\s+', ' ', normalized).strip()
+            return normalized
+        
+        search_normalized = normalize_title(search_title)
+        plex_normalized = normalize_title(plex_title)
+        
+        # Try exact match first
+        if search_normalized == plex_normalized:
+            return True
+        
+        # Try substring match
+        if search_normalized in plex_normalized or plex_normalized in search_normalized:
+            return True
+        
+        # Try fuzzy matching for very similar titles
+        try:
+            from fuzzywuzzy import fuzz
+            similarity = fuzz.ratio(search_normalized, plex_normalized)
+            return similarity >= 85  # High threshold for title matching within artist
+        except ImportError:
+            return False
+
     def find_best_match(self, library_section, track):
-        """Enhanced find_best_match with user confirmation for low scores"""
-        title, artist = self.parse_track_info(track)
+        """Enhanced find_best_match with album-aware matching for short titles"""
+        title, artist, album = self.parse_track_info(track)
         
         # Create a readable track string for display purposes
         readable_track = f"{title} - {artist}" if artist else title
+        if album and album != 'Unknown Album':
+            readable_track += f" (from {album})"
         
         # Be more careful with very short titles but don't skip them entirely
         if len(title.strip()) < 3:
@@ -4420,65 +4988,121 @@ class PlaylistConverterThread(QThread):
         is_short_title = len(title.strip()) <= 4  # Increased threshold to match manual search
         
         if is_short_title:
-            # For short titles, try automatic "title - artist" search first
-            logging.debug(f"Short title '{title}' (length: {len(title.strip())}) detected - trying automatic 'title - artist' search")
+            # For short titles, use structured search: Artist → Album → Track
+            logging.debug(f"Short title '{title}' (length: {len(title.strip())}) detected - using structured search approach")
             
             if artist:
-                # For short titles, ONLY search within the specific artist's tracks
-                logging.debug(f"Short title '{title}' - searching ONLY within artist '{artist}' tracks")
+                # First, check if the artist exists in the library
+                logging.debug(f"Checking if artist '{artist}' exists in library")
+                try:
+                    artist_results = library_section.searchArtists(title=artist)
+                    if not artist_results:
+                        logging.warning(f"Artist '{artist}' not found in library for track '{title}'")
+                        # Artist doesn't exist - ask user whether to skip or search manually
+                        self.artist_not_found_signal.emit(readable_track, artist, library_section)
+                        user_choice = self.wait_for_user_response()
+                        if user_choice == "skip":
+                            logging.info(f"User chose to skip track '{title}' by '{artist}' - artist not found")
+                            return None
+                        elif user_choice == "search":
+                            logging.info(f"User chose manual search for track '{title}' by '{artist}' - artist not found")
+                            self.manual_search_needed.emit(readable_track, library_section)
+                            manual_result = self.wait_for_user_response()
+                            return manual_result if manual_result != "skip" else None
+                        # If user chooses to continue, proceed with normal search logic
+                        logging.info(f"Continuing with search despite artist '{artist}' not being found")
+                    else:
+                        logging.debug(f"Artist '{artist}' found in library ({len(artist_results)} matches)")
+                except Exception as e:
+                    logging.warning(f"Error checking artist existence for '{artist}': {e}")
+                
+                # For short titles, use structured approach: Artist → Album → Track
+                logging.debug(f"Short title '{title}' - searching within artist '{artist}' using structured approach")
                 all_search_tracks = []
                 
-                # Primary strategy: Search by artist name and filter by title
-                try:
-                    artist_search_tracks = library_section.searchTracks(title=artist)
-                    logging.debug(f"Artist search for '{artist}' found {len(artist_search_tracks)} tracks")
+                # Step 2: Search for album within artist's discography (if album info available)
+                if album and album != 'Unknown Album':
+                    logging.debug(f"Step 2: Searching for album '{album}' within artist '{artist}' discography")
                     
-                    # Get clean version of title for better matching
-                    clean_title = self.remove_featured_artists_aggressive(title)
-                    logging.debug(f"Cleaned title: '{title}' -> '{clean_title}'")
-                    
-                    # Filter to find tracks that match our title
-                    for track in artist_search_tracks:
-                        if track.title:
-                            track_title_lower = track.title.lower()
-                            title_lower = title.lower()
-                            clean_title_lower = clean_title.lower()
-                            
-                            # Check for exact or partial matches
-                            if (title_lower == track_title_lower or 
-                                clean_title_lower == track_title_lower or
-                                title_lower in track_title_lower or 
-                                clean_title_lower in track_title_lower):
-                                all_search_tracks.append(track)
-                                logging.debug(f"Found potential match: '{track.title}' by {getattr(track, 'originalTitle', 'Unknown')}")
-                    
-                    logging.debug(f"Artist-filtered search found {len(all_search_tracks)} matching tracks")
-                except Exception as e:
-                    logging.warning(f"Artist search failed: {e}")
-                
-                # Fallback: If no results from artist search, try direct title search but filter by artist
-                if not all_search_tracks:
                     try:
-                        logging.debug(f"No artist-based results, trying title search with artist filtering")
-                        title_search_tracks = library_section.searchTracks(title=title)
-                        clean_title = self.remove_featured_artists_aggressive(title)
+                        # Get the artist object(s) and search their albums
+                        artist_results = library_section.searchArtists(title=artist)
+                        album_found = False
                         
-                        # Filter by artist metadata
-                        for track in title_search_tracks[:20]:  # Limit to avoid performance issues
-                            track_artist = ""
-                            if hasattr(track, 'originalTitle') and track.originalTitle:
-                                track_artist = track.originalTitle
-                            elif hasattr(track, 'artist') and track.artist():
-                                track_artist = track.artist().title
+                        for artist_obj in artist_results[:2]:  # Check top 2 artist matches
+                            try:
+                                # Get all albums by this artist
+                                artist_albums = artist_obj.albums()
+                                logging.debug(f"Artist '{artist_obj.title}' has {len(artist_albums)} albums")
+                                
+                                # Look for the specific album
+                                matching_albums = []
+                                for artist_album in artist_albums:
+                                    album_similarity = fuzz.token_set_ratio(album.lower(), artist_album.title.lower())
+                                    if album_similarity >= 70:  # Good album match
+                                        matching_albums.append((artist_album, album_similarity))
+                                        logging.debug(f"Found matching album: '{artist_album.title}' (similarity: {album_similarity}%)")
+                                
+                                if matching_albums:
+                                    album_found = True
+                                    # Step 3a: Album exists, search for track within this album
+                                    logging.debug(f"Step 3a: Album found, searching for track '{title}' within album")
+                                    
+                                    for album_obj, similarity in sorted(matching_albums, key=lambda x: x[1], reverse=True):
+                                        try:
+                                            album_tracks = album_obj.tracks()
+                                            logging.debug(f"Album '{album_obj.title}' has {len(album_tracks)} tracks")
+                                            
+                                            for track in album_tracks:
+                                                if self.fuzzy_title_match(title, track.title):
+                                                    all_search_tracks.append(track)
+                                                    logging.debug(f"Found track in album: '{track.title}' from '{album_obj.title}'")
+                                        except Exception as e:
+                                            logging.warning(f"Error searching tracks in album '{album_obj.title}': {e}")
+                                    
+                            except Exception as e:
+                                logging.warning(f"Error searching albums for artist '{artist_obj.title}': {e}")
+                        
+                        # Step 3b: If album not found, search title within all artist's songs
+                        if not album_found:
+                            logging.debug(f"Step 3b: Album '{album}' not found, searching title '{title}' within all artist songs")
                             
-                            # Check for artist match (fuzzy)
-                            if track_artist and artist.lower() in track_artist.lower():
-                                all_search_tracks.append(track)
-                                logging.debug(f"Found fallback match: '{track.title}' by {track_artist}")
+                            for artist_obj in artist_results[:2]:
+                                try:
+                                    artist_tracks = artist_obj.tracks()
+                                    logging.debug(f"Artist '{artist_obj.title}' has {len(artist_tracks)} total tracks")
+                                    
+                                    for track in artist_tracks:
+                                        if self.fuzzy_title_match(title, track.title):
+                                            all_search_tracks.append(track)
+                                            logging.debug(f"Found track in artist discography: '{track.title}' by '{artist_obj.title}'")
+                                            
+                                except Exception as e:
+                                    logging.warning(f"Error searching all tracks for artist '{artist_obj.title}': {e}")
                         
-                        logging.debug(f"Title search filtered by artist found {len(all_search_tracks)} additional tracks")
                     except Exception as e:
-                        logging.warning(f"Title search with artist filter failed: {e}")
+                        logging.warning(f"Error in album search for '{album}': {e}")
+                        
+                else:
+                    # No album info - search title within all artist's songs
+                    logging.debug(f"Step 2: No album info, searching title '{title}' within all artist '{artist}' songs")
+                    
+                    try:
+                        artist_results = library_section.searchArtists(title=artist)
+                        for artist_obj in artist_results[:2]:
+                            try:
+                                artist_tracks = artist_obj.tracks()
+                                logging.debug(f"Artist '{artist_obj.title}' has {len(artist_tracks)} total tracks")
+                                
+                                for track in artist_tracks:
+                                    if self.fuzzy_title_match(title, track.title):
+                                        all_search_tracks.append(track)
+                                        logging.debug(f"Found track in artist discography: '{track.title}' by '{artist_obj.title}'")
+                                        
+                            except Exception as e:
+                                logging.warning(f"Error searching all tracks for artist '{artist_obj.title}': {e}")
+                    except Exception as e:
+                        logging.warning(f"Error searching artist tracks: {e}")
                 
                 # Deduplicate results
                 seen_tracks = set()
@@ -4490,21 +5114,14 @@ class PlaylistConverterThread(QThread):
                         unique_tracks.append(track)
                 
                 all_tracks = unique_tracks
-                logging.debug(f"Total unique tracks after combining searches: {len(all_tracks)}")
+                logging.debug(f"Structured search found {len(all_tracks)} tracks for short title '{title}'")
                 
-                # If we have good results (1-25 tracks), proceed with normal matching
-                # Increased threshold since we have good filtering logic
-                if 1 <= len(all_tracks) <= 25:
-                    logging.debug(f"Good automatic results for short title '{title}' - proceeding with normal matching")
-                elif len(all_tracks) == 0:
-                    logging.debug(f"No automatic results for short title '{title}' - triggering manual search")
+                # If no results found, trigger manual search
+                if len(all_tracks) == 0:
+                    logging.debug(f"No results found for short title '{title}' by '{artist}' - triggering manual search")
                     self.manual_search_needed.emit(readable_track, library_section)
                     manual_result = self.wait_for_user_response()
                     return manual_result if manual_result != "skip" else None
-                else:
-                    logging.debug(f"Too many automatic results ({len(all_tracks)}) for short title '{title}' - proceeding with normal matching anyway")
-                    # Don't give up - let the matching algorithm handle it
-                    # The fuzzy matching will find the best match even with many results
             else:
                 # No artist info, go straight to manual search
                 logging.debug(f"Short title '{title}' with no artist info - triggering manual search")
@@ -4512,27 +5129,83 @@ class PlaylistConverterThread(QThread):
                 manual_result = self.wait_for_user_response()
                 return manual_result if manual_result != "skip" else None
         else:
-            # Normal search for longer titles - try both original and clean title
+            # Normal search for longer titles - use artist-first approach when possible
             all_tracks = []
             
-            # First try the original title
-            try:
-                original_tracks = library_section.searchTracks(title=title)
-                all_tracks.extend(original_tracks)
-                logging.debug(f"Original title search for '{title}' found {len(original_tracks)} tracks")
-            except Exception as e:
-                logging.warning(f"Original title search failed: {e}")
+            # If we have artist info, search within artist's tracks first (much more efficient)
+            if artist and artist.strip():
+                # First, check if the artist exists in the library
+                logging.debug(f"Checking if artist '{artist}' exists in library (normal title search)")
+                try:
+                    artist_results = library_section.searchArtists(title=artist)
+                    if not artist_results:
+                        logging.warning(f"Artist '{artist}' not found in library for track '{title}' (normal title)")
+                        # Artist doesn't exist - ask user whether to skip or search manually
+                        self.artist_not_found_signal.emit(readable_track, artist, library_section)
+                        user_choice = self.wait_for_user_response()
+                        if user_choice == "skip":
+                            logging.info(f"User chose to skip track '{title}' by '{artist}' - artist not found (normal title)")
+                            return None
+                        elif user_choice == "search":
+                            logging.info(f"User chose manual search for track '{title}' by '{artist}' - artist not found (normal title)")
+                            self.manual_search_needed.emit(readable_track, library_section)
+                            manual_result = self.wait_for_user_response()
+                            return manual_result if manual_result != "skip" else None
+                        # If user chooses to continue, proceed with normal search logic
+                        logging.info(f"Continuing with search despite artist '{artist}' not being found (normal title)")
+                    else:
+                        logging.debug(f"Artist '{artist}' found in library ({len(artist_results)} matches) - normal title search")
+                except Exception as e:
+                    logging.warning(f"Error checking artist existence for '{artist}' (normal title): {e}")
+                
+                try:
+                    logging.debug(f"Searching for artist '{artist}' first")
+                    # Use existing artist_results from above check if available
+                    if 'artist_results' not in locals():
+                        artist_results = library_section.searchArtists(title=artist)
+                    
+                    if artist_results:
+                        # Found artist(s), search within their tracks
+                        for artist_obj in artist_results[:3]:  # Check top 3 artist matches
+                            try:
+                                artist_tracks = artist_obj.tracks()
+                                logging.debug(f"Found {len(artist_tracks)} tracks by '{artist_obj.title}'")
+                                
+                                # Search for title within this artist's tracks
+                                clean_title = self.clean_title_for_search(title)
+                                logging.debug(f"Cleaned title: '{title}' -> '{clean_title}'")
+                                
+                                # Try both original and clean title (avoid duplicates)
+                                search_titles = []
+                                if title and title.strip():
+                                    search_titles.append(title)
+                                if clean_title and clean_title.strip() and clean_title != title:
+                                    search_titles.append(clean_title)
+                                
+                                for search_title in search_titles:
+                                    matching_tracks = [
+                                        track for track in artist_tracks 
+                                        if self.fuzzy_title_match(search_title, track.title)
+                                    ]
+                                    all_tracks.extend(matching_tracks)
+                                    logging.debug(f"Artist '{artist_obj.title}' title search for '{search_title}' found {len(matching_tracks)} tracks")
+                                    
+                            except Exception as e:
+                                logging.warning(f"Error searching tracks for artist '{artist_obj.title}': {e}")
+                                
+                    else:
+                        logging.debug(f"No artist found for '{artist}', triggering manual search instead of library-wide search")
+                        # Don't fall back to expensive library-wide search, go straight to manual search
+                        
+                except Exception as e:
+                    logging.warning(f"Artist search failed for '{artist}': {e}")
             
-            # Also try the clean title (without featured artists and version info)
-            try:
-                clean_title = self.clean_title_for_search(title)
-                logging.debug(f"Cleaned title: '{title}' -> '{clean_title}'")
-                if clean_title != title and clean_title.strip():
-                    clean_tracks = library_section.searchTracks(title=clean_title)
-                    all_tracks.extend(clean_tracks)
-                    logging.debug(f"Clean title search for '{clean_title}' found {len(clean_tracks)} tracks")
-            except Exception as e:
-                logging.warning(f"Clean title search failed: {e}")
+            # If artist search didn't yield results, trigger manual search instead of library-wide search
+            if not all_tracks:
+                logging.debug(f"No artist-specific results found for '{title}' by '{artist}' - triggering manual search")
+                self.manual_search_needed.emit(readable_track, library_section)
+                manual_result = self.wait_for_user_response()
+                return manual_result if manual_result != "skip" else None
             
             # Deduplicate
             seen_tracks = set()
@@ -4544,9 +5217,7 @@ class PlaylistConverterThread(QThread):
                     unique_tracks.append(track)
             all_tracks = unique_tracks
             
-            if len(all_tracks) > 100:
-                logging.debug(f"Too many search results ({len(all_tracks)}) for '{title}', limiting to first 100")
-                all_tracks = all_tracks[:100]
+            logging.debug(f"Total unique tracks after artist-first search: {len(all_tracks)}")
         
         best_match = None
         best_score = 0
@@ -4556,11 +5227,17 @@ class PlaylistConverterThread(QThread):
             # Calculate similarity score for title
             plex_title = plex_track.title if plex_track.title else ""
             
+            # Debug: Log the exact track details
+            logging.debug(f"Plex track found: ID={plex_track.ratingKey}, Title='{plex_title}', Artist='{plex_track.originalTitle or (plex_track.artist().title if plex_track.artist() else 'Unknown')}'")
+            
             # Clean featured artists from BOTH source and Plex titles for better matching
             clean_source_title = self.remove_featured_artists_aggressive(title)
             clean_plex_title = self.remove_featured_artists_aggressive(plex_title)
             
-            logging.debug(f"Comparing: '{clean_source_title}' vs '{clean_plex_title}' (original: '{title}' vs '{plex_title}')")
+            # ALSO apply dash removal from clean_title_for_search to source title for consistency
+            dash_cleaned_source = self.clean_title_for_search(title)
+            
+            logging.debug(f"Comparing: '{dash_cleaned_source}' vs '{clean_plex_title}' (original: '{title}' vs '{plex_title}')")
             
             # Check if source has no featured artists but Plex track does - be more strict
             source_has_feat = title != clean_source_title
@@ -4571,13 +5248,13 @@ class PlaylistConverterThread(QThread):
                 logging.debug(f"Source '{title}' is clean but Plex '{plex_title}' has featured artists - applying penalty")
                 # We'll apply a penalty later in scoring
             
-            # Apply version filtering before scoring (now more permissive) - use clean titles
-            if not self.is_acceptable_version_match(clean_source_title, clean_plex_title):
-                logging.debug(f"Skipping version mismatch: '{clean_source_title}' vs '{clean_plex_title}'")
+            # Apply version filtering before scoring - use dash-cleaned source title
+            if not self.is_acceptable_version_match(dash_cleaned_source, clean_plex_title):
+                logging.debug(f"Skipping version mismatch: '{dash_cleaned_source}' vs '{clean_plex_title}'")
                 continue
             
-            # Calculate similarity using clean titles (without featured artists)
-            title_score = fuzz.token_set_ratio(clean_source_title.lower(), clean_plex_title.lower())
+            # Calculate similarity using dash-cleaned source title for better matching
+            title_score = fuzz.token_set_ratio(dash_cleaned_source.lower(), clean_plex_title.lower())
             
             # Also calculate with original titles for comparison
             original_title_score = fuzz.token_set_ratio(title.lower(), plex_title.lower())
@@ -4601,17 +5278,30 @@ class PlaylistConverterThread(QThread):
             
             # Debug logging for exact matches
             if title_score == 100 and artist_score >= 90:
-                logging.info(f"EXACT MATCH FOUND: '{clean_source_title}' by '{artist}' -> '{clean_plex_title}' by '{plex_artist}' (title: {title_score}, artist: {artist_score})")
-            elif clean_source_title.lower() == clean_plex_title.lower():
-                logging.info(f"PERFECT CLEAN TITLE MATCH: '{clean_source_title}' -> '{clean_plex_title}' (ignoring featured artists)")
+                logging.info(f"EXACT MATCH FOUND: '{dash_cleaned_source}' by '{artist}' -> '{clean_plex_title}' by '{plex_artist}' (title: {title_score}, artist: {artist_score})")
+            elif dash_cleaned_source.lower() == clean_plex_title.lower():
+                logging.info(f"PERFECT CLEAN TITLE MATCH: '{dash_cleaned_source}' -> '{clean_plex_title}' (after dash removal and cleaning)")
+            
+            # Apply minimum artist score requirement to prevent wrong artist matches
+            if artist and artist_score < 50:  # Minimum 50% artist similarity required
+                logging.debug(f"Skipping due to low artist match: '{artist}' vs '{plex_artist}' (score: {artist_score})")
+                continue
+            
+            # Apply penalty if source is clean but Plex has featured artists (use original titles for this check)
+            source_has_feat = title != clean_source_title
+            plex_has_feat = plex_title != clean_plex_title
+            
+            if not source_has_feat and plex_has_feat:
+                # Source is clean but Plex has featured artists - penalize heavily
+                logging.debug(f"Source '{title}' is clean but Plex '{plex_title}' has featured artists - applying penalty")
+                # We'll apply a penalty later in scoring
             
             # Weighted average of title and artist scores
             combined_score = (title_score * 0.7) + (artist_score * 0.3)
             
-            # Apply penalty if source is clean but Plex has featured artists
             if not source_has_feat and plex_has_feat:
-                # Only apply penalty if it's not an exact title match
-                if clean_source_title.lower() != clean_plex_title.lower():
+                # Only apply penalty if it's not an exact title match (use dash-cleaned comparison)
+                if dash_cleaned_source.lower() != clean_plex_title.lower():
                     penalty = 25  # Heavy penalty for featured artist mismatch
                     combined_score -= penalty
                     logging.debug(f"Applied featured artist penalty: -{penalty} points (new score: {combined_score})")
@@ -4623,11 +5313,37 @@ class PlaylistConverterThread(QThread):
                 # Short titles need exact or near-exact matches
                 if title_score < 95:  # Very strict for short titles
                     continue
-                logging.debug(f"Short title match: '{title}' -> '{plex_title}' (score: {title_score})")
+                # For short titles, require even higher artist accuracy
+                if artist and artist_score < 70:  # Higher threshold for short titles
+                    logging.debug(f"Skipping short title due to insufficient artist match: '{artist}' vs '{plex_artist}' (score: {artist_score})")
+                    continue
+                logging.debug(f"Short title match: '{title}' -> '{plex_title}' (title: {title_score}, artist: {artist_score})")
             
             # Apply preference bonus for remastered versions
             preference_bonus = self.get_version_preference_bonus(plex_title)
-            final_score = combined_score + preference_bonus
+            
+            # Apply album preference bonus if we have album information
+            album_bonus = 0
+            if album and album != 'Unknown Album':
+                plex_album = ""
+                if hasattr(plex_track, 'album') and plex_track.album():
+                    plex_album = plex_track.album().title
+                
+                if plex_album:
+                    # Calculate album similarity
+                    album_similarity = fuzz.token_set_ratio(album.lower(), plex_album.lower())
+                    if album_similarity >= 80:
+                        album_bonus = 5.0  # Strong bonus for correct album
+                        logging.debug(f"Album match bonus: '{album}' -> '{plex_album}' (+{album_bonus} points)")
+                    elif album_similarity >= 60:
+                        album_bonus = 2.0  # Moderate bonus for similar album
+                        logging.debug(f"Album similarity bonus: '{album}' -> '{plex_album}' (+{album_bonus} points)")
+                    else:
+                        # Small bonus for any track by the same artist (better than compilation albums)
+                        album_bonus = 0.5  # Small bonus for artist's own albums vs compilations
+                        logging.debug(f"Artist album bonus: '{album}' vs '{plex_album}' (+{album_bonus} points)")
+            
+            final_score = combined_score + preference_bonus + album_bonus
             
             # Adjust threshold based on title length
             min_threshold = 90 if is_short_title else 60
@@ -4683,12 +5399,87 @@ class PlaylistConverterThread(QThread):
                 return manual_result if manual_result != "skip" else None
             return None
 
+    def clean_artist_name(self, artist):
+        """Clean artist name for better matching - removes remaster info, years, and featured artists"""
+        if not artist:
+            return ""
+        
+        import re
+        
+        # Remove remaster information and years from artist field
+        # Patterns like "2015 Remaster - Van Halen" -> "Van Halen"
+        remaster_patterns = [
+            r'^\d{4}\s*remaster\s*-\s*',     # "2015 Remaster - " at start
+            r'^\d{4}\s*remastered\s*-\s*',   # "2015 Remastered - " at start
+            r'^\s*remaster\s*-\s*',          # "Remaster - " at start
+            r'^\s*remastered\s*-\s*',        # "Remastered - " at start
+            r'\s*-\s*\d{4}\s*remaster$',     # " - 2015 Remaster" at end
+            r'\s*-\s*\d{4}\s*remastered$',   # " - 2015 Remastered" at end
+            r'\s*-\s*remaster$',             # " - Remaster" at end
+            r'\s*-\s*remastered$',           # " - Remastered" at end
+        ]
+        
+        cleaned = artist
+        for pattern in remaster_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove version information in parentheses/brackets from artist field
+        version_patterns = [
+            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^)]*\)',
+            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|deluxe|anniversary|edition)[^\]]*\]'
+        ]
+        
+        for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove "feat" mentions from artist field
+        feat_patterns = [
+            r'\s*feat\.?\s+.+$',      # feat. Artist (everything after)
+            r'\s*ft\.?\s+.+$',        # ft. Artist (everything after)
+            r'\s*featuring\s+.+$',    # featuring Artist (everything after)
+            r'\s*with\s+.+$',         # with Artist (everything after)
+            r',\s*feat\.?\s+.+$',     # , feat. Artist
+            r',\s*ft\.?\s+.+$',       # , ft. Artist
+            r',\s*featuring\s+.+$',   # , featuring Artist
+            r',\s*with\s+.+$',        # , with Artist
+        ]
+        
+        for pattern in feat_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Clean up extra spaces and punctuation
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip(' -,&()[]')
+        
+        # If we removed too much and left nothing meaningful, return original
+        if len(cleaned.strip()) < 1:
+            return artist
+            
+        return cleaned
+
     def parse_track_info(self, track):
-        parts = track.split(' - ', 1)
-        if len(parts) == 2:
-            return parts[0].strip(), parts[1].strip()
-        else:
-            return track.strip(), ''
+        # Handle new structured format with album info
+        if isinstance(track, dict):
+            title = track.get('title', '').strip()
+            artist = track.get('artist', '').strip()
+            album = track.get('album', '').strip()
+            # Clean the artist name to remove remaster info, years, etc.
+            artist = self.clean_artist_name(artist)
+            return title, artist, album
+        
+        # Handle legacy string format
+        if isinstance(track, str):
+            parts = track.split(' - ', 1)
+            if len(parts) == 2:
+                title = parts[0].strip()
+                artist = parts[1].strip()
+                # Clean the artist name to remove remaster info, years, etc.
+                artist = self.clean_artist_name(artist)
+                return title, artist, ''
+            else:
+                return track.strip(), '', ''
+        
+        return '', '', ''
     
     def remove_featured_artists(self, title):
         """Remove featured artist information to focus search on main track title"""
@@ -4814,13 +5605,61 @@ class PlaylistConverterThread(QThread):
         
         cleaned = title
         
+        # NEW: Remove dash and everything after it (until brackets)
+        # This handles titles like "Accidentally In Love - From "Shrek 2" Soundtrack"
+        # Remove "-" and everything after it, but stop at brackets/parentheses
+        if ' - ' in cleaned:
+            # Find the first dash with spaces
+            dash_index = cleaned.find(' - ')
+            if dash_index != -1:
+                # Check if there are brackets/parentheses after the dash
+                remaining_text = cleaned[dash_index:]
+                # Look for opening bracket/parenthesis
+                bracket_match = re.search(r'[()\[\]]', remaining_text)
+                if bracket_match:
+                    # Keep everything up to dash, then everything from the bracket onward
+                    before_dash = cleaned[:dash_index]
+                    bracket_start = dash_index + bracket_match.start()
+                    after_bracket = cleaned[bracket_start:]
+                    cleaned = before_dash + ' ' + after_bracket
+                else:
+                    # No brackets found, remove everything after dash
+                    cleaned = cleaned[:dash_index]
+        
         # Remove version information in parentheses and brackets
         version_patterns = [
-            r'\s*\([^)]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^)]*\)',
-            r'\s*\[[^\]]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^\]]*\]'
+            r'\\s*\\([^)]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^)]*\\)',
+            r'\\s*\\[[^\\]]*(?:remaster|remastered|remix|mix|edit|version|acoustic|live|unplugged|demo|deluxe|anniversary|edition|stereo|mono|explicit|clean|radio|single|album)[^\\]]*\\]'
         ]
         
         for pattern in version_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove semicolon-separated version info first (like "; 2017 Remaster")
+        semicolon_patterns = [
+            r'\s*;\s*(?:\d{4}\s+)?(?:remaster|remastered)(?:\s+\d{4})?.*$',
+            r'\s*;\s*(?:\d{4}\s+)?(?:remastered\s+)?(?:edition|version).*$',
+        ]
+        
+        for pattern in semicolon_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # Remove version information that appears after dashes in the main title
+        # Patterns like "Song Title - Remastered", "Track Name - 2021 Remaster", etc.
+        dash_version_patterns = [
+            r'\s*-\s*(?:\d{4}\s+)?(?:remaster|remastered)(?:\s+\d{4})?.*$',  # - Remastered, - 2021 Remaster
+            r'\s*-\s*(?:\d{4}\s+)?(?:remastered\s+)?(?:edition|version).*$',  # - Edition, - Version, - 2021 Edition
+            r'\s*-\s*(?:deluxe|anniversary|special)\s*(?:edition|version)?.*$',  # - Deluxe, - Anniversary Edition
+            r'\s*-\s*(?:stereo|mono).*$',  # - Stereo, - Mono
+            r'\s*-\s*(?:explicit|clean).*$',  # - Explicit, - Clean
+            r'\s*-\s*(?:radio|single|album)\s*(?:edit|version)?.*$',  # - Radio Edit, - Single Version
+            r'\s*-\s*live(?:\s+at\s+[^-]*)?.*$',  # - Live, - Live at Venue
+            r'\s*-\s*acoustic.*$',  # - Acoustic
+            r'\s*-\s*unplugged.*$',  # - Unplugged
+            r'\s*-\s*demo.*$',  # - Demo
+        ]
+        
+        for pattern in dash_version_patterns:
             cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
         
         # Remove featured artist information
@@ -4850,7 +5689,10 @@ class PlaylistConverterThread(QThread):
         
         # Clean up extra spaces and punctuation
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        cleaned = cleaned.rstrip(' -,&()[]')
+        cleaned = cleaned.rstrip(' -,&')
+        
+        # Don't remove closing parentheses/brackets that might be part of the song title
+        # Only remove unmatched opening brackets or obvious trailing punctuation
         
         # If we removed too much and left nothing meaningful, return original
         if len(cleaned.strip()) < 2:
@@ -4861,7 +5703,7 @@ class PlaylistConverterThread(QThread):
     def is_acceptable_version_match(self, source_title, plex_title):
         """
         Check if a Plex track version is acceptable for matching against a source track.
-        Now much more permissive - allows live versions and most variations.
+        Now strict - only allows explicitly permitted versions when source is clean.
         """
         import re
         
@@ -4869,29 +5711,28 @@ class PlaylistConverterThread(QThread):
         source_extras = self.extract_version_info(source_title)
         plex_extras = self.extract_version_info(plex_title)
         
-        # Be much more permissive - only reject truly problematic matches
+        # Be strict when source has no version info - only allow explicitly permitted versions
         if not source_extras:
             # Allowed version types even when source has no version info
             allowed_when_source_clean = [
                 'remaster', 'remastered', 'remastered version', 'remastered edition',
                 'stereo', 'mono', 'original', 'album version', 'single version',
-                'explicit', 'clean', 'radio edit', 'radio version'
+                'explicit', 'clean', 'radio edit', 'radio version',
+                # Soundtrack and compilation variants (common after dash removal)
+                'soundtrack', 'from', 'motion picture', 'movie', 'film',
+                'ost', 'original soundtrack', 'original motion picture soundtrack'
             ]
             
             # Check if any Plex version info is problematic
             for extra in plex_extras:
                 extra_clean = extra.lower().strip()
                 
-                # Skip if it's an allowed type
-                if any(allowed in extra_clean for allowed in allowed_when_source_clean):
-                    continue
+                # Check if it's an allowed type - if not, reject it
+                is_allowed = any(allowed in extra_clean for allowed in allowed_when_source_clean)
                 
-                # Allow live versions - they'll get lower preference but still be available
-                # (Removed automatic rejection of live versions)
-                
-                # Only reject very specific problematic remixes
-                if any(bad_remix in extra_clean for bad_remix in ['extended mix', 'club mix', 'dance mix', 'house mix']):
-                    logging.debug(f"Rejecting specific remix: '{plex_title}' for clean source: '{source_title}'")
+                if not is_allowed:
+                    # Reject ANY version info that's not explicitly allowed
+                    logging.debug(f"Rejecting version: '{plex_title}' (contains '{extra}') for clean source: '{source_title}'")
                     return False
                 
                 # Allow featuring/with variations (user requested)
@@ -5532,6 +6373,62 @@ class PlexPlaylistManager(QMainWindow):
                     
         except Exception as e:
             logging.error(f"Error handling track match confirmation: {str(e)}")
+            # Fallback - skip the track
+            if hasattr(self, 'converter_thread') and self.converter_thread:
+                self.converter_thread.set_user_response("skip")
+
+    def handle_artist_not_found(self, track_info, artist_name, library_section):
+        """Handle artist not found dialog on main thread"""
+        try:
+            # Create a simple message box asking user what to do
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Artist Not Found")
+            msg_box.setIcon(QMessageBox.Warning)
+            
+            msg_box.setText(f"🎤 Artist '{artist_name}' was not found in your library.")
+            msg_box.setInformativeText(f"Track: {track_info}\n\nWhat would you like to do?")
+            
+            # Create custom buttons
+            skip_btn = msg_box.addButton("❌ Skip Track", QMessageBox.RejectRole)
+            search_btn = msg_box.addButton("🔍 Manual Search", QMessageBox.AcceptRole)
+            
+            # Style the dialog
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QMessageBox QLabel {
+                    color: #ffffff;
+                    font-size: 14px;
+                }
+                QMessageBox QPushButton {
+                    background-color: #00bcd4;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    min-width: 120px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #00acc1;
+                }
+            """)
+            
+            result = msg_box.exec_()
+            
+            if msg_box.clickedButton() == skip_btn:
+                # User chose to skip
+                if hasattr(self, 'converter_thread') and self.converter_thread:
+                    self.converter_thread.set_user_response("skip")
+            else:
+                # User chose manual search
+                if hasattr(self, 'converter_thread') and self.converter_thread:
+                    self.converter_thread.set_user_response("search")
+                    
+        except Exception as e:
+            logging.error(f"Error handling artist not found dialog: {str(e)}")
             # Fallback - skip the track
             if hasattr(self, 'converter_thread') and self.converter_thread:
                 self.converter_thread.set_user_response("skip")
@@ -7582,17 +8479,53 @@ Last Analyzed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 logging.debug(f"Skipping search for very short title: '{title}'")
                 return None
             
-            # Limit search results for performance
-            all_tracks = library_section.searchTracks(title=title)
-            if len(all_tracks) > 100:
-                logging.debug(f"Too many search results ({len(all_tracks)}) for '{title}', limiting to first 100")
-                all_tracks = all_tracks[:100]
+            # Use artist-first search approach for better efficiency
+            all_tracks = []
+            
+            # If we have artist info, search within artist's tracks first
+            if artist and artist.strip():
+                try:
+                    logging.debug(f"Merge: Searching for artist '{artist}' first")
+                    artist_results = library_section.searchArtists(title=artist)
+                    
+                    if artist_results:
+                        # Found artist(s), search within their tracks
+                        for artist_obj in artist_results[:3]:  # Check top 3 artist matches
+                            try:
+                                artist_tracks = artist_obj.tracks()
+                                logging.debug(f"Merge: Found {len(artist_tracks)} tracks by '{artist_obj.title}'")
+                                
+                                # Search for title within this artist's tracks
+                                matching_tracks = [
+                                    track for track in artist_tracks 
+                                    if self.fuzzy_title_match(title, track.title)
+                                ]
+                                all_tracks.extend(matching_tracks)
+                                logging.debug(f"Merge: Artist '{artist_obj.title}' title search found {len(matching_tracks)} tracks")
+                                
+                            except Exception as e:
+                                logging.warning(f"Merge: Error searching tracks for artist '{artist_obj.title}': {e}")
+                                
+                    else:
+                        logging.debug(f"Merge: No artist found for '{artist}', skipping library-wide search")
+                        # Don't fall back to expensive library-wide search for merge operations
+                        
+                except Exception as e:
+                    logging.warning(f"Merge: Artist search failed for '{artist}': {e}")
+            
+            # If artist search didn't yield results, return None instead of library-wide search
+            if not all_tracks:
+                logging.debug(f"Merge: No artist-specific results found for '{title}' by '{artist}' - returning None")
+                return None
             
             best_match = None
             best_score = 0
             
             for plex_track in all_tracks:
                 plex_title = plex_track.title if plex_track.title else ""
+                
+                # Debug: Log the exact track details
+                logging.debug(f"Plex track found (merge): ID={plex_track.ratingKey}, Title='{plex_title}', Artist='{plex_track.originalTitle or (plex_track.artist().title if plex_track.artist() else 'Unknown')}'")
                 
                 # Apply version filtering before scoring
                 if not self.is_acceptable_version_match(title, plex_title):
@@ -7627,12 +8560,28 @@ Last Analyzed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return None
 
     def parse_track_info(self, track):
-        """Parse track info into title and artist"""
-        parts = track.split(' - ', 1)
-        if len(parts) == 2:
-            return parts[0].strip(), parts[1].strip()
-        else:
-            return track.strip(), ''
+        """Parse track info into title and artist - handles both string and dict formats"""
+        # Handle new structured format with album info
+        if isinstance(track, dict):
+            title = track.get('title', '').strip()
+            artist = track.get('artist', '').strip()
+            # Clean the artist name to remove remaster info, years, etc.
+            artist = self.clean_artist_name(artist)
+            return title, artist
+        
+        # Handle legacy string format
+        if isinstance(track, str):
+            parts = track.split(' - ', 1)
+            if len(parts) == 2:
+                title = parts[0].strip()
+                artist = parts[1].strip()
+                # Clean the artist name to remove remaster info, years, etc.
+                artist = self.clean_artist_name(artist)
+                return title, artist
+            else:
+                return track.strip(), ''
+        
+        return '', ''
     
     def is_acceptable_version_match(self, source_title, plex_title):
         """
@@ -7662,16 +8611,17 @@ Last Analyzed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             for extra in plex_extras:
                 extra_clean = extra.lower().strip()
                 
-                # Skip if it's an allowed type
-                if any(allowed in extra_clean for allowed in allowed_when_source_clean):
-                    continue
+                # Check if it's an allowed type - if not, reject it
+                is_allowed = any(allowed in extra_clean for allowed in allowed_when_source_clean)
+                    
+                if not is_allowed:
+                    # Reject ANY version info that's not explicitly allowed
+                    logging.debug(f"Rejecting version: '{plex_title}' (contains '{extra}') for clean source: '{source_title}'")
+                    return False
                 
                 # Allow live versions - they'll get lower preference but still be available
                 # (Removed automatic rejection of live versions)
                 
-                # Only reject very specific problematic remixes
-                if any(bad_remix in extra_clean for bad_remix in ['extended mix', 'club mix', 'dance mix', 'house mix']):
-                    logging.debug(f"Rejecting specific remix: '{plex_title}' for clean source: '{source_title}'")
                     return False
                 
                 # Allow featuring/with variations (user requested)
@@ -7930,6 +8880,8 @@ Last Analyzed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.converter_thread.track_match_confirmation_needed.connect(self.handle_track_match_confirmation)
             # NEW: Connect the manual search signal
             self.converter_thread.manual_search_needed.connect(self.handle_manual_search)
+            # NEW: Connect the artist not found signal
+            self.converter_thread.artist_not_found_signal.connect(self.handle_artist_not_found)
             
             self.converter_thread.progress_update.connect(self.update_streaming_progress)
             self.converter_thread.finished.connect(self.conversion_finished)
