@@ -2812,10 +2812,16 @@ class ManualSearchDialog(QDialog):
     def setup_ui(self):
         # Create readable title from parsed track info
         readable_track = f"{self.source_title} - {self.source_artist}" if self.source_artist else self.source_title
-        self.setWindowTitle(f"Manual Search: {readable_track}")
+        
+        # Truncate very long titles for window title
+        window_title = readable_track
+        if len(window_title) > 60:
+            window_title = window_title[:57] + "..."
+        
+        self.setWindowTitle(f"Manual Search: {window_title}")
         self.setModal(True)
-        self.resize(900, 700)  # Increased height to prevent button cutoff
-        self.setMinimumSize(850, 650)  # Set minimum size to ensure proper layout
+        self.resize(1000, 750)  # Increased size for better layout
+        self.setMinimumSize(950, 700)  # Larger minimum size to prevent cutoff
         
         # Dark theme
         self.setStyleSheet("""
@@ -2868,21 +2874,26 @@ class ManualSearchDialog(QDialog):
         
         layout = QVBoxLayout(self)
         
-        # Header
+        # Header with proper text wrapping
         readable_track = f"{self.source_title} - {self.source_artist}" if self.source_artist else self.source_title
         header = QLabel(f"🔍 Search for: {readable_track}")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #00bcd4; margin-bottom: 10px;")
+        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #00bcd4; margin-bottom: 10px; padding: 5px;")
+        header.setWordWrap(True)  # Enable text wrapping for long track names
+        header.setMaximumHeight(60)  # Limit height to prevent excessive space usage
         layout.addWidget(header)
         
         # Search inputs - separate title and artist fields
         search_layout = QVBoxLayout()
         
-        # Title search row
+        # Title search row with better spacing
         title_layout = QHBoxLayout()
+        title_layout.setContentsMargins(5, 5, 5, 5)
         title_label = QLabel("Title:")
-        title_label.setFixedWidth(50)
+        title_label.setFixedWidth(60)  # Slightly wider label
+        title_label.setStyleSheet("font-weight: bold;")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter track title...")
+        self.search_input.setMinimumHeight(35)  # Ensure minimum height
         
         # Pre-populate with source track title (clean version without featured artists)
         title_part = self.source_title.replace("Manual Search: ", "")
@@ -2900,12 +2911,15 @@ class ManualSearchDialog(QDialog):
         title_layout.addWidget(title_label)
         title_layout.addWidget(self.search_input)
         
-        # Artist search row
+        # Artist search row with better spacing
         artist_layout = QHBoxLayout()
+        artist_layout.setContentsMargins(5, 5, 5, 5)
         artist_label = QLabel("Artist:")
-        artist_label.setFixedWidth(50)
+        artist_label.setFixedWidth(60)  # Slightly wider label
+        artist_label.setStyleSheet("font-weight: bold;")
         self.artist_input = QLineEdit()
         self.artist_input.setPlaceholderText("Enter artist name (optional)...")
+        self.artist_input.setMinimumHeight(35)  # Ensure minimum height
         
         # Pre-populate with source artist if available
         if self.source_artist:
@@ -2917,21 +2931,34 @@ class ManualSearchDialog(QDialog):
         artist_layout.addWidget(artist_label)
         artist_layout.addWidget(self.artist_input)
         
-        # Button row
+        # Button row with better spacing
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 5, 0, 5)  # Add vertical margins
         
         # Add manual search button
-        search_btn = QPushButton("Search")
+        search_btn = QPushButton("🔍 Search")
         search_btn.clicked.connect(self.perform_search)
-        search_btn.setFixedWidth(100)
+        search_btn.setFixedWidth(120)  # Wider button
+        search_btn.setFixedHeight(35)  # Consistent height
         
         # Add clear button
-        clear_btn = QPushButton("Clear")
+        clear_btn = QPushButton("🗑️ Clear")
         clear_btn.clicked.connect(self.clear_search_inputs)
-        clear_btn.setFixedWidth(80)
+        clear_btn.setFixedWidth(100)  # Wider button
+        clear_btn.setFixedHeight(35)  # Consistent height
+        
+        # Add test button for debugging
+        test_btn = QPushButton("🧪 Test")
+        test_btn.clicked.connect(self.test_search)
+        test_btn.setFixedWidth(90)
+        test_btn.setFixedHeight(35)
+        test_btn.setToolTip("Test basic search functionality")
         
         button_layout.addWidget(search_btn)
+        button_layout.addSpacing(10)  # Space between buttons
         button_layout.addWidget(clear_btn)
+        button_layout.addSpacing(10)  # Space between buttons
+        button_layout.addWidget(test_btn)
         button_layout.addStretch()  # Push buttons to the left
         
         search_layout.addLayout(title_layout)
@@ -2951,27 +2978,31 @@ class ManualSearchDialog(QDialog):
         
         # Action buttons - improved layout to prevent cutoff
         action_button_layout = QHBoxLayout()
-        action_button_layout.setContentsMargins(10, 10, 10, 10)  # Add margins
+        action_button_layout.setContentsMargins(15, 15, 15, 20)  # Generous margins, extra bottom margin
         
         # Add some spacing
         action_button_layout.addStretch()
         
-        self.select_btn = QPushButton("✅ Use Selected")
+        self.select_btn = QPushButton("✅ Use Selected Track")
         self.select_btn.clicked.connect(self.select_track)
         self.select_btn.setEnabled(False)
-        self.select_btn.setFixedWidth(140)
-        self.select_btn.setFixedHeight(35)  # Ensure consistent height
+        self.select_btn.setFixedWidth(180)  # Wider button
+        self.select_btn.setFixedHeight(40)  # Taller button for better visibility
         
-        skip_btn = QPushButton("❌ Skip Track")
+        skip_btn = QPushButton("❌ Skip This Track")
         skip_btn.clicked.connect(self.skip_track)
-        skip_btn.setFixedWidth(120)
-        skip_btn.setFixedHeight(35)  # Ensure consistent height
+        skip_btn.setFixedWidth(160)  # Wider button
+        skip_btn.setFixedHeight(40)  # Taller button for better visibility
         
         action_button_layout.addWidget(self.select_btn)
-        action_button_layout.addSpacing(10)  # Add spacing between buttons
+        action_button_layout.addSpacing(15)  # More spacing between buttons
         action_button_layout.addWidget(skip_btn)
         action_button_layout.addStretch()
+        
+        # Add the button layout with extra spacing
+        layout.addSpacing(10)  # Extra space before buttons
         layout.addLayout(action_button_layout)
+        layout.addSpacing(5)   # Extra space after buttons to prevent cutoff
         
         # Enable select button when item is selected
         self.results_list.itemSelectionChanged.connect(self.on_selection_changed)
@@ -5833,8 +5864,40 @@ class PlexPlaylistManager(QMainWindow):
         self.initUI()
         self.load_config()
         self.setStyleSheet(self.get_stylesheet())
-        self.setWindowTitle('Syncra - Playlist Manager')
-        self.setWindowIcon(QIcon('Syncra Icon.ico'))
+        self.setWindowTitle('Syncra v2')
+        # Set window icon - prioritize optimized ICO file
+        icon_files = [
+            'Syncra_Optimized_Icon.ico',
+            'Syncra_v2_Icon.ico', 
+            'Syncra Icon.ico'
+        ]
+        
+        icon_set = False
+        for icon_file in icon_files:
+            try:
+                if os.path.exists(icon_file):
+                    self.setWindowIcon(QIcon(icon_file))
+                    icon_set = True
+                    break
+            except Exception:
+                continue
+        
+        # Fallback to SVG if no ICO files work
+        if not icon_set:
+            try:
+                from PyQt5.QtSvg import QSvgRenderer
+                from PyQt5.QtGui import QPixmap, QPainter
+                
+                if os.path.exists('syncra_v2_icon.svg'):
+                    renderer = QSvgRenderer('syncra_v2_icon.svg')
+                    pixmap = QPixmap(64, 64)
+                    pixmap.fill(Qt.transparent)
+                    painter = QPainter(pixmap)
+                    renderer.render(painter)
+                    painter.end()
+                    self.setWindowIcon(QIcon(pixmap))
+            except Exception:
+                pass  # No icon available
         self.resize(1400, 900)
         
     def get_logo_svg(self):
@@ -5895,11 +5958,55 @@ class PlexPlaylistManager(QMainWindow):
         from PyQt5.QtSvg import QSvgWidget
         from PyQt5.QtCore import QByteArray
         
-        # Create SVG logo
-        logo_widget = QSvgWidget()
-        svg_data = QByteArray(self.get_logo_svg().encode('utf-8'))
-        logo_widget.load(svg_data)
-        logo_widget.setFixedSize(250, 100)
+        # Load the Syncra v2 logo
+        logo_widget = None
+        
+        # Try to load the v2 logo SVG file (handle both dev and PyInstaller paths)
+        logo_paths = ['syncra_v2_logo.svg']
+        
+        # Add PyInstaller resource path if running as executable
+        if hasattr(sys, '_MEIPASS'):
+            logo_paths.insert(0, os.path.join(sys._MEIPASS, 'syncra_v2_logo.svg'))
+        
+        for logo_path in logo_paths:
+            if os.path.exists(logo_path):
+                try:
+                    logo_widget = QSvgWidget(logo_path)
+                    logo_widget.setFixedSize(300, 80)  # Match SVG dimensions
+                    # Verify the SVG loaded properly
+                    if logo_widget.renderer().isValid():
+                        print(f"Successfully loaded logo from: {logo_path}")
+                        break
+                    else:
+                        raise Exception("SVG renderer invalid")
+                except Exception as e:
+                    print(f"Failed to load {logo_path}: {e}")
+                    logo_widget = None
+        
+        # Fallback to embedded SVG if file loading failed
+        if logo_widget is None:
+            try:
+                logo_widget = QSvgWidget()
+                svg_data = QByteArray(self.get_logo_svg().encode('utf-8'))
+                logo_widget.load(svg_data)
+                logo_widget.setFixedSize(250, 100)
+            except Exception as e:
+                print(f"Failed to load embedded SVG: {e}")
+                # Final fallback - create a simple text label
+                from PyQt5.QtWidgets import QLabel
+                logo_widget = QLabel("SYNCRA v2")
+                logo_widget.setStyleSheet("""
+                    QLabel {
+                        color: #3498db;
+                        font-size: 24px;
+                        font-weight: bold;
+                        padding: 20px;
+                        background: #2b2b2b;
+                        border-radius: 8px;
+                    }
+                """)
+                logo_widget.setFixedSize(250, 80)
+        
         sidebar_layout.addWidget(logo_widget)
         
         self.connection_btn = ModernButton('Connection')

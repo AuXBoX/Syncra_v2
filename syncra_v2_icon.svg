@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="#2b2b2b" stroke="#00bcd4" stroke-width="4"/>
+  
+  <!-- Gradient definitions -->
+  <defs>
+    <linearGradient id="syncGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00bcd4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00acc1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="syncGradient2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4caf50;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#45a049;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="centerGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00bcd4;stop-opacity:1" />
+    </radialGradient>
+  </defs>
+  
+  <!-- Main sync symbol -->
+  <g transform="translate(128, 80)">
+    <!-- Outer rotating ring -->
+    <circle cx="0" cy="0" r="35" fill="none" stroke="url(#syncGradient)" stroke-width="6" 
+            stroke-dasharray="70 20" stroke-linecap="round">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="0 0 0"
+        to="360 0 0"
+        dur="4s"
+        repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Inner rotating ring -->
+    <circle cx="0" cy="0" r="22" fill="none" stroke="url(#syncGradient2)" stroke-width="4"
+            stroke-dasharray="40 15" stroke-linecap="round">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="360 0 0"
+        to="0 0 0"
+        dur="3s"
+        repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Center core -->
+    <circle cx="0" cy="0" r="8" fill="url(#centerGrad)"/>
+    
+    <!-- Sync arrows -->
+    <path d="M 25 -10 L 20 -15 L 23 -15 L 23 -20 L 30 -20 L 30 -15 L 33 -15 Z" fill="#00bcd4"/>
+    <path d="M -25 10 L -20 15 L -23 15 L -23 20 L -30 20 L -30 15 L -33 15 Z" fill="#4caf50"/>
+  </g>
+  
+  <!-- Text: SYNCRA -->
+  <text x="128" y="160" font-family="Arial, sans-serif" font-size="32" font-weight="bold" 
+        fill="#ffffff" text-anchor="middle">SYNCRA</text>
+  
+  <!-- Version: V2 -->
+  <text x="128" y="185" font-family="Arial, sans-serif" font-size="18" font-weight="300" 
+        fill="#00bcd4" text-anchor="middle">V2</text>
+  
+  <!-- Small decorative sync symbols -->
+  <circle cx="60" cy="60" r="3" fill="#00bcd4" opacity="0.6"/>
+  <circle cx="196" cy="60" r="3" fill="#4caf50" opacity="0.6"/>
+  <circle cx="60" cy="196" r="3" fill="#00acc1" opacity="0.6"/>
+  <circle cx="196" cy="196" r="3" fill="#4caf50" opacity="0.6"/>
+</svg>

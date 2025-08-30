@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="600" height="150" viewBox="0 0 600 150" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background with subtle gradient -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1e1e1e;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#2b2b2b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e1e1e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00bcd4;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#4caf50;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00acc1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#f0f0f0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00bcd4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <rect width="600" height="150" fill="url(#bgGrad)" rx="12"/>
+  
+  <!-- Main sync icon -->
+  <g transform="translate(60, 75)">
+    <!-- Outer sync ring -->
+    <circle cx="0" cy="0" r="35" fill="none" stroke="#00bcd4" stroke-width="5" 
+            stroke-dasharray="80 20" stroke-linecap="round" opacity="0.8">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="0 0 0"
+        to="360 0 0"
+        dur="6s"
+        repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Middle ring -->
+    <circle cx="0" cy="0" r="25" fill="none" stroke="#4caf50" stroke-width="3"
+            stroke-dasharray="60 15" stroke-linecap="round" opacity="0.7">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="360 0 0"
+        to="0 0 0"
+        dur="4s"
+        repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Inner core -->
+    <circle cx="0" cy="0" r="15" fill="none" stroke="#00acc1" stroke-width="2"
+            stroke-dasharray="40 10" stroke-linecap="round">
+      <animateTransform
+        attributeName="transform"
+        attributeType="XML"
+        type="rotate"
+        from="0 0 0"
+        to="360 0 0"
+        dur="3s"
+        repeatCount="indefinite"/>
+    </circle>
+    
+    <!-- Center -->
+    <circle cx="0" cy="0" r="6" fill="url(#logoGrad)"/>
+    
+    <!-- Sync arrows -->
+    <path d="M 28 -8 L 23 -13 L 26 -13 L 26 -18 L 32 -18 L 32 -13 L 35 -13 Z" fill="#00bcd4"/>
+    <path d="M -28 8 L -23 13 L -26 13 L -26 18 L -32 18 L -32 13 L -35 13 Z" fill="#4caf50"/>
+  </g>
+  
+  <!-- Main title: SYNCRA -->
+  <text x="150" y="70" font-family="Arial, sans-serif" font-size="48" font-weight="bold" 
+        fill="url(#textGrad)">SYNCRA</text>
+  
+  <!-- Version: V2 -->
+  <text x="380" y="70" font-family="Arial, sans-serif" font-size="32" font-weight="300" 
+        fill="#00bcd4">V2</text>
+  
+  <!-- Tagline -->
+  <text x="150" y="100" font-family="Arial, sans-serif" font-size="16" 
+        fill="#aaaaaa">Advanced Playlist Synchronization for Plex Media Server</text>
+  
+  <!-- Feature highlights -->
+  <text x="150" y="125" font-family="Arial, sans-serif" font-size="12" 
+        fill="#666666">Spotify • Deezer • Tidal • Smart Matching • Auto-Sync</text>
+  
+  <!-- Decorative elements -->
+  <g opacity="0.3">
+    <circle cx="500" cy="30" r="3" fill="#00bcd4"/>
+    <circle cx="520" cy="40" r="2" fill="#4caf50"/>
+    <circle cx="540" cy="25" r="2.5" fill="#00acc1"/>
+    <circle cx="520" cy="120" r="2" fill="#00bcd4"/>
+    <circle cx="540" cy="110" r="3" fill="#4caf50"/>
+    <circle cx="560" cy="125" r="1.5" fill="#00acc1"/>
+  </g>
+  
+  <!-- Border highlight -->
+  <rect width="600" height="150" fill="none" stroke="url(#logoGrad)" stroke-width="2" rx="12" opacity="0.3"/>
+</svg>

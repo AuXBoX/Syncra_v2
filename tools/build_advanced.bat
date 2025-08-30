@@ -20,15 +20,32 @@ for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PYTHON_VERSION=%%i
 echo Using Python version: %PYTHON_VERSION%
 
 REM Check if PyInstaller is installed
-python -c "import PyInstaller" >nul 2>&1
+echo Checking PyInstaller installation...
+python -c "import PyInstaller; print('PyInstaller version:', PyInstaller.__version__)" 2>nul
 if errorlevel 1 (
     echo PyInstaller not found. Installing...
-    pip install pyinstaller
+    echo This may take a few minutes...
+    python -m pip install --upgrade pip
+    python -m pip install pyinstaller
     if errorlevel 1 (
         echo ERROR: Failed to install PyInstaller
+        echo Try running: python -m pip install pyinstaller
         pause
         exit /b 1
     )
+    echo PyInstaller installed successfully!
+) else (
+    echo PyInstaller is already installed.
+)
+
+REM Verify PyInstaller is accessible
+echo Verifying PyInstaller installation...
+python -m PyInstaller --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: PyInstaller is installed but not accessible
+    echo Try running the build with: python -m PyInstaller instead
+    pause
+    exit /b 1
 )
 
 REM Get PyInstaller version
@@ -130,13 +147,13 @@ echo This may take several minutes depending on build type...
 echo.
 
 REM Build command
-pyinstaller ^
+python -m PyInstaller ^
     --onefile ^
     %WINDOW_PARAM% ^
     --name="Syncra" ^
     %ICON_PARAM% ^
     --version-file="tools\version_info.txt" ^
-    --add-data="requirements.txt;." ^
+
     --hidden-import=PyQt5.QtSvg ^
     --hidden-import=PyQt5.QtWidgets ^
     --hidden-import=PyQt5.QtCore ^

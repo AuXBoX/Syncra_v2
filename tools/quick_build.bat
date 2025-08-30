@@ -5,8 +5,15 @@ echo ================================
 REM Navigate to project root
 cd /d "%~dp0.."
 
+REM Check if PyInstaller is available
+python -c "import PyInstaller" >nul 2>&1
+if errorlevel 1 (
+    echo Installing PyInstaller...
+    python -m pip install pyinstaller
+)
+
 REM Quick build with minimal options
-pyinstaller --onefile --windowed --name="Syncra" --icon="Syncra Icon.ico" main.py
+python -m PyInstaller --onefile --windowed --name="Syncra" --icon="Syncra Icon.ico" main.py
 
 if errorlevel 1 (
     echo Build failed!

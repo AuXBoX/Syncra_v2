@@ -50,6 +50,24 @@ cd tools
 quick_build.bat
 ```
 
+### 4. `diagnose_build.bat` - Build Environment Diagnostics
+Comprehensive diagnostic script to identify and fix build environment issues.
+
+**Usage:**
+```batch
+cd tools
+diagnose_build.bat
+```
+
+### 5. `manual_build.bat` - Step-by-Step Manual Build
+Shows each build step individually to help identify where issues occur.
+
+**Usage:**
+```batch
+cd tools
+manual_build.bat
+```
+
 ## Requirements
 
 ### System Requirements
@@ -102,10 +120,16 @@ The generated `Syncra.exe` file is completely portable and can be:
 - Install Python from https://python.org
 - Make sure to check "Add Python to PATH" during installation
 
+**"'pyinstaller' is not recognized as an internal or external command"**
+- Run `diagnose_build.bat` to check your environment
+- Try: `python -m pip install pyinstaller`
+- Use `manual_build.bat` to see step-by-step progress
+
 **"Build failed" errors**
+- Run `diagnose_build.bat` first to identify issues
 - Check that all dependencies are installed: `pip install -r requirements.txt`
 - Ensure you have sufficient disk space (2GB+)
-- Try the quick_build.bat first to isolate issues
+- Try `manual_build.bat` to see exactly where it fails
 
 **Large executable size**
 - Use the "Optimized" build type in build_advanced.bat
