@@ -1,20 +1,6 @@
-# Syncra - Advanced Plex Playlist Manager
+# Syncra v2 - Advanced Plex Playlist Manager
 
 🎵 **Professional-grade playlist management for Plex Media Server with intelligent streaming service integration**
-
-## 📸 Screenshots
-
-### Home
-![Home](https://github.com/user-attachments/assets/e9857b64-c7d4-4cbb-99e2-ef92ed2ca37c)
-
-### Advanced Playlist Editor
-![Playlist Editor](https://github.com/user-attachments/assets/c9b11924-f87f-4e3f-8ebb-c9dfb9c3f17f)
-
-### Sync Manager
-![Sync Manager](https://github.com/user-attachments/assets/fb07dc8d-a905-457b-91f2-6a436a2fdf2d)
-
-### Tools & Utilities
-![Tools & Utilities](https://github.com/user-attachments/assets/02bd9f7d-7eab-4c83-950a-5a9d8ea20863)
 
 ## ✨ Key Features
 
@@ -59,6 +45,8 @@ Get the latest version from the [Releases](https://github.com/AuXBoX/Syncrav2/re
 - **🪟 Windows**: Single executable, ready to run
 - **🍎 macOS**: Universal binary for Intel & Apple Silicon  
 - **🐧 Linux**: AppImage format for maximum compatibility
+
+*Syncra v2 brings enhanced UI with modern animated logos, improved performance, and better streaming service integration.*
 
 ## 📋 System Requirements
 
@@ -132,13 +120,50 @@ pip install -r requirements.txt
 
 # Run application
 python main.py
-
-# Build executable (optional)
-pip install pyinstaller
-pyinstaller --onefile --windowed --icon="Syncra Icon.ico" main.py
 ```
 
+### 🔨 Building Standalone Executables
+
+Syncra includes professional build tools in the `tools/` folder for creating standalone executables:
+
+#### Windows Build Tools
+- **`build_exe.bat`** - Standard build (recommended for distribution)
+- **`build_advanced.bat`** - Advanced options (debug, optimized, development builds)
+- **`quick_build.bat`** - Fast build for testing
+
+#### Usage
+```batch
+# Navigate to tools folder
+cd tools
+
+# Run standard build (recommended)
+build_exe.bat
+
+# Or use advanced build with options
+build_advanced.bat
+```
+
+#### Features
+- ✅ **Fully standalone** - no Python installation required
+- ✅ **All dependencies embedded** - PyQt5, PlexAPI, Spotipy, etc.
+- ✅ **Single executable file** - easy distribution
+- ✅ **Automatic dependency detection** - handles all imports
+- ✅ **Icon and version info** - professional appearance
+- ✅ **Multiple build types** - standard, debug, optimized
+- ✅ **Build validation** - automatic testing and size reporting
+
+The generated executable can run on any Windows computer without requiring Python or any dependencies to be installed.
+
+See `tools/README.md` for detailed build instructions and troubleshooting.
+
 ## 🎉 Recent Improvements
+
+### v2.0.0 - Modern UI & Enhanced Branding
+- 🎆 **New modern logos** with animated synchronization elements
+- 🎨 **Enhanced UI design** with teal and green color scheme
+- 🔄 **Rotating circular symbols** representing sync functionality
+- 📱 **Multiple logo formats** for different use cases (icon, logo, banner)
+- ✨ **SVG-based graphics** for crisp rendering at any size
 
 ### v2.1.0 - Enhanced Matching & Search
 - 🔍 **Manual search dialog** with real-time search results
@@ -190,7 +215,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## ⭐ Show Your Support
 
-If Syncra makes managing your Plex playlists easier, please:
+If Syncra v2 makes managing your Plex playlists easier, please:
 - ⭐ **Star this repository** to show your support
 - 🔄 **Share with fellow Plex users** who need better playlist management
 - 💝 **Contribute** improvements, bug reports, or feature suggestions

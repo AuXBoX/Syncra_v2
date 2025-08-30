@@ -1,0 +1,226 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build Windows executable
+      run: |
+        pyinstaller --onefile --windowed --name="Syncra" --icon="Syncra Icon.ico" --add-data="requirements.txt;." --hidden-import=PyQt5.QtSvg --hidden-import=PyQt5.QtWidgets --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=plexapi --hidden-import=spotipy --hidden-import=requests --hidden-import=fuzzywuzzy --hidden-import=pyotp --hidden-import=PIL --hidden-import=deezer --collect-all=PyQt5 --collect-all=plexapi --collect-all=spotipy --collect-all=fuzzywuzzy --collect-all=requests main.py
+        
+    - name: Test executable
+      run: |
+        if (Test-Path "dist\Syncra.exe") {
+          Write-Host "✅ Executable built successfully"
+          $size = (Get-Item "dist\Syncra.exe").Length
+          Write-Host "📦 File size: $([math]::Round($size/1MB, 2)) MB"
+        } else {
+          Write-Host "❌ Executable not found"
+          exit 1
+        }
+      shell: powershell
+        
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: syncra-windows
+        path: dist/Syncra.exe
+        
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build macOS executable
+      run: |
+        pyinstaller --onefile --windowed --name="Syncra" --icon="Syncra Icon.ico" --add-data="requirements.txt:." --hidden-import=PyQt5.QtSvg --hidden-import=PyQt5.QtWidgets --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=plexapi --hidden-import=spotipy --hidden-import=requests --hidden-import=fuzzywuzzy --hidden-import=pyotp --hidden-import=PIL --hidden-import=deezer --collect-all=PyQt5 --collect-all=plexapi --collect-all=spotipy --collect-all=fuzzywuzzy --collect-all=requests main.py
+        
+    - name: Test executable
+      run: |
+        if [ -f "dist/Syncra" ]; then
+          echo "✅ Executable built successfully"
+          size=$(stat -f%z "dist/Syncra")
+          echo "📦 File size: $((size / 1024 / 1024)) MB"
+        else
+          echo "❌ Executable not found"
+          exit 1
+        fi
+        
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: syncra-macos
+        path: dist/Syncra
+        
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgl1-mesa-glx libegl1-mesa libxrandr2 libxrandr2 libxss1 libxcursor1 libxcomposite1 libasound2 libxi6 libxtst6
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build Linux executable
+      run: |
+        pyinstaller --onefile --windowed --name="Syncra" --add-data="requirements.txt:." --hidden-import=PyQt5.QtSvg --hidden-import=PyQt5.QtWidgets --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=plexapi --hidden-import=spotipy --hidden-import=requests --hidden-import=fuzzywuzzy --hidden-import=pyotp --hidden-import=PIL --hidden-import=deezer --collect-all=PyQt5 --collect-all=plexapi --collect-all=spotipy --collect-all=fuzzywuzzy --collect-all=requests main.py
+        
+    - name: Test executable
+      run: |
+        if [ -f "dist/Syncra" ]; then
+          echo "✅ Executable built successfully"
+          size=$(stat -c%s "dist/Syncra")
+          echo "📦 File size: $((size / 1024 / 1024)) MB"
+        else
+          echo "❌ Executable not found"
+          exit 1
+        fi
+        
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: syncra-linux
+        path: dist/Syncra
+        
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        
+        # Windows
+        cp syncra-windows/Syncra.exe release/Syncra-Windows.exe
+        
+        # macOS
+        cp syncra-macos/Syncra release/Syncra-macOS
+        chmod +x release/Syncra-macOS
+        
+        # Linux
+        cp syncra-linux/Syncra release/Syncra-Linux
+        chmod +x release/Syncra-Linux
+        
+        # Create checksums
+        cd release
+        sha256sum * > checksums.txt
+        
+    - name: Get version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        name: Syncra ${{ steps.version.outputs.version }}
+        body: |
+          ## Syncra ${{ steps.version.outputs.version }}
+          
+          ### 📦 Downloads
+          
+          | Platform | File | Description |
+          |----------|------|-------------|
+          | 🪟 **Windows** | `Syncra-Windows.exe` | Standalone executable for Windows 10/11 |
+          | 🍎 **macOS** | `Syncra-macOS` | Universal binary for Intel & Apple Silicon |
+          | 🐧 **Linux** | `Syncra-Linux` | Executable for Ubuntu 18.04+ and compatible |
+          
+          ### ✨ Features
+          - Advanced Plex playlist management
+          - Spotify, Deezer, and Tidal integration
+          - Intelligent track matching with fuzzy algorithms
+          - Real-time search and filtering
+          - Drag-and-drop playlist editing
+          - Backup and restore functionality
+          
+          ### 🚀 Installation
+          1. Download the appropriate file for your platform
+          2. Make executable (macOS/Linux): `chmod +x Syncra-*`
+          3. Run the application
+          4. No additional dependencies required!
+          
+          ### 🔐 Verification
+          Use the provided `checksums.txt` to verify file integrity:
+          ```bash
+          sha256sum -c checksums.txt
+          ```
+          
+          ### 📋 System Requirements
+          - **Windows**: Windows 10/11 (64-bit)
+          - **macOS**: macOS 10.14+ (Mojave or later)
+          - **Linux**: Ubuntu 18.04+ or equivalent
+          
+          All platforms require network access to Plex Media Server.
+          
+        files: |
+          release/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
